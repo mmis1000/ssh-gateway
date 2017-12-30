@@ -1,0 +1,10 @@
+{
+    "sshHost": "do.mmis1000.me",
+    "sshPort": 11020,
+    "sshListen": 11020,
+    "httpHost": "gateway.do.mmis1000.me",
+    "httpPort": 80,
+    "httpListen": 11080,
+    "trustedProxy": "localhost",
+    "saveDir": "save"
+}
