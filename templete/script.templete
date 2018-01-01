@@ -84,7 +84,15 @@ fi
 
 # echo "Unshared, current PID is $$ "
 read -p "press any key to continue..." -n 1
-read -p "Forward which port as the http entry?: " -i "8080" -e FORWARD_PORT
+read -p "Forward which port as the http entry (0 to use static directory instead)?: " -i "8080" -e FORWARD_PORT
+
+if [ "$FORWARD_PORT" != 0 ]
+then
+    STATIC_DIRECTORY="null"
+else
+    read -p "use which static directory?: " -i "$(pwd)" -e STATIC_DIRECTORY
+fi
+
 # setup keys
 mkdir $HOME/.gateway-mmis1000 > /dev/null 2> /dev/null
 cd $HOME/.gateway-mmis1000
@@ -111,7 +119,7 @@ $(which sshd) -D -f $HOME/.gateway-mmis1000/sshd_config -p *LISTEN_PORT* >> "$HO
 ssh -N            -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*    -M -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST*& # spawn the master
 sleep 5
 echo 'preparing to register client...'
-ssh               -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST* "register $ORIGINAL_USER_NAME $FORWARD_PORT" # add forward 
+ssh               -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST* "register $ORIGINAL_USER_NAME $FORWARD_PORT $STATIC_DIRECTORY" # add forward 
 sleep 1
 echo 'starting to forward connection'
 ssh -N -O forward -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no" -R 22:localhost:*LISTEN_PORT* *TARGET_USER*@*TARGET_HOST*  # add forward 
@@ -133,7 +141,7 @@ do
         ssh -N            -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*    -M -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST*& # spawn the master
         sleep 5
         echo 'preparing to register client...'
-        ssh               -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST* "register $ORIGINAL_USER_NAME $FORWARD_PORT" # add forward 
+        ssh               -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST* "register $ORIGINAL_USER_NAME $FORWARD_PORT $STATIC_DIRECTORY" # add forward 
         sleep 1
         echo 'starting to forward connection'
         ssh -N -O forward -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" -R 22:localhost:*LISTEN_PORT* *TARGET_USER*@*TARGET_HOST*  # add forward 

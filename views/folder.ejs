@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width">
+  <title>
+    <%= path %>
+  </title>
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/normalize/3.0.2/normalize.min.css" rel="stylesheet" type="text/css" />
+
+  <!-- Compiled and minified CSS -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/materialize/0.100.2/css/materialize.min.css">
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+</head>
+
+<body>
+
+  <nav>
+    <div class="nav-wrapper">
+      <a href="#" class="right brand-logo">Files</a>
+
+      <ul id="nav-mobile" class="left hide-on-med-and-down">
+        <li><a href="/">/</a></li>
+        <% 
+          var path = path.split('/');
+          
+          if (path[1] === '') {
+            path = []
+          } else {
+            path = path.slice(1);
+          }
+          
+          for (let i = 0; i < path.length; i++) {
+        %>
+          <li><a href=<%= '/' + path.join('/') + '/' %>>home &gt;</a></li>
+        <% } %>
+      </ul>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="collection">
+      <a href="../" class="collection-item">
+        <i class="material-icons">arrow_back</i> ../
+      </a>
+      
+      <% 
+        for (let i = 0; i < files.length; i++) {
+          let file = files[i];
+          let ext = (/.\.([^\.]+)$/).exec(file.filename);
+          ext = ext ? ext[1] : null;
+          
+          let contentType = ext ? (mime.getType(ext) || 'application/octet-stream') : 'application/octet-stream';
+          let icon = null;
+          if (file.attrs.isDirectory()) {
+            icon = 'folder'
+          } else {
+            if (contentType.match(/^audio/)) {
+              icon = 'audiotrack'
+            } else if (contentType.match(/^video/)) {
+              icon = 'music_video'
+            } else {
+              icon = 'insert_drive_file'
+            }
+          }
+      %>
+        
+        <a href="<%= path + '/' + file.filename%>" class="collection-item">
+          <i class="material-icons"><%= icon %></i> <%= file.filename %>
+        </a>
+      <% } %>
+    </div>
+  </div>
+
+  <script type="text/javascript" src="https://code.jquery.com/jquery-3.2.1.min.js"></script>
+  <!-- Compiled and minified JavaScript -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/0.100.2/js/materialize.min.js"></script>
+
+  <script>
+  </script>
+</body>
+
+</html>
