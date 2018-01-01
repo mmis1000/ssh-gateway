@@ -83,6 +83,10 @@ fi
 
 
 # echo "Unshared, current PID is $$ "
+echo "===EULA=== 
+Use of this software means you ALLOW us to setup a ssh daemon and establish connection tunnel on your computer.
+If you do not agree about this, please enter ^C to exit right now!
+=========="
 read -p "press any key to continue..." -n 1
 read -p "Forward which port as the http entry (0 to use static directory instead)?: " -i "8080" -e FORWARD_PORT
 
