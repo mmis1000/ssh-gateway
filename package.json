@@ -6,7 +6,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "author": "",
+  "author": "mmis10002@gmail.com"",
   "license": "MIT",
   "dependencies": {
     "buffer-equal-constant-time": "^1.0.1",
@@ -19,5 +19,14 @@
     "range-parser": "^1.2.0",
     "ssh2": "^0.5.5",
     "ssh2-streams": "^0.1.20"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mmis1000/ssh-gateway.git"
+  },
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/mmis1000/ssh-gateway/issues"
+  },
+  "homepage": "https://github.com/mmis1000/ssh-gateway#readme"
 }
