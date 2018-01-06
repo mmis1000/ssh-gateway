@@ -12,6 +12,15 @@
   <!-- Compiled and minified CSS -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/materialize/0.100.2/css/materialize.min.css">
   <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+  <style>
+    body, html {
+      background: #fcfcfc
+    }
+
+    .collection-item i {
+      vertical-align: bottom;
+    }
+  </style>
 </head>
 
 <body>
@@ -23,14 +32,14 @@
       <ul id="nav-mobile" class="left hide-on-med-and-down">
         <li><a href="/">/</a></li>
         <% 
-          console.log(path);
           var temp = path.split('/');
+          
           if (temp[1] === '') {
             temp = []
           } else {
             temp = temp.slice(1, temp.length - 1);
           }
-          console.log(temp)
+          
           for (let i = 0; i < temp.length; i++) {
         %>
           <li><a href=<%= "/" + temp.slice(0, i + 1).join('/') + '/' %>><%= temp[i] %> &gt;</a></li>
@@ -41,11 +50,25 @@
 
   <div class="container">
     <div class="collection">
-      <a href="../" class="collection-item">
-        <i class="material-icons">arrow_back</i> ../
-      </a>
+      <% if (path !== '/') { %>
+        <a href="../" class="collection-item light-blue-text text-darken-4">
+          <i class="material-icons">arrow_back</i> ../
+        </a>
+      <% } %>
+      
       
       <% 
+        files.sort(function (a, b) {
+          var aTypeOrder = a.attrs.isSymbolicLink() ? 2 : a.attrs.isDirectory() ? 1 : 0;
+          var bTypeOrder = b.attrs.isSymbolicLink() ? 2 : b.attrs.isDirectory() ? 1 : 0;
+          
+          if (aTypeOrder != bTypeOrder) {
+            return bTypeOrder - aTypeOrder;
+          }
+          
+          return a.filename > b.filename ? 1 : -1;
+        })
+        
         for (let i = 0; i < files.length; i++) {
           let file = files[i];
           let ext = (/.\.([^\.]+)$/).exec(file.filename);
@@ -53,20 +76,26 @@
           
           let contentType = ext ? (mime.getType(ext) || 'application/octet-stream') : 'application/octet-stream';
           let icon = null;
-          if (file.attrs.isDirectory()) {
+          let textColor = null;
+          if (file.attrs.isSymbolicLink()) {
+            icon = 'link'
+            textColor = 'cyan-text text-accent-4'
+          } else if (file.attrs.isDirectory()) {
             icon = 'folder'
+            textColor = 'light-blue-text text-darken-4'
           } else {
+            textColor = 'grey-text text-darken-4'
             if (contentType.match(/^audio/)) {
               icon = 'audiotrack'
             } else if (contentType.match(/^video/)) {
-              icon = 'music_video'
+              icon = 'video_library'
             } else {
               icon = 'insert_drive_file'
             }
           }
       %>
         
-        <a href="<%= path + file.filename%>" class="collection-item">
+        <a href="<%= path + file.filename%>" class="collection-item <%= textColor %>">
           <i class="material-icons"><%= icon %></i> <%= file.filename %>
         </a>
       <% } %>

@@ -4,11 +4,11 @@
 
 # command setting
 export CURRENT_USER="$(id -u)" 
-export ORIGINAL_USER="$(id -u $(who am i | awk '{print $1}'))"
-export ORIGINAL_USER_NAME="$(who am i | awk '{print $1}')"
+export ORIGINAL_USER="$(id -u $(ls -l `tty` | awk '{print $3}'))"
+export ORIGINAL_USER_NAME="$(ls -l `tty` | awk '{print $3}')"
 
 # unshare make `who` fails
-if [ "$(who | awk '{print $1}')" == "" ]
+if [ "$(ls -l `tty` | awk '{print $3}')" == "" ]
 then
     export ORIGINAL_USER="$(id -u))"
     export ORIGINAL_USER_NAME="$(whoami)"
