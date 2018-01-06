@@ -42,7 +42,7 @@
           
           for (let i = 0; i < temp.length; i++) {
         %>
-          <li><a href=<%= "/" + temp.slice(0, i + 1).join('/') + '/' %>><%= temp[i] %> &gt;</a></li>
+          <li><a href=<%= encodeURI("/" + temp.slice(0, i + 1).join('/') + '/') %>><%= temp[i] %> &gt;</a></li>
         <% } %>
       </ul>
     </div>
@@ -95,7 +95,7 @@
           }
       %>
         
-        <a href="<%= path + file.filename%>" class="collection-item <%= textColor %>">
+        <a href="<%= encodeURI(path + file.filename) %>" class="collection-item <%= textColor %>">
           <i class="material-icons"><%= icon %></i> <%= file.filename %>
         </a>
       <% } %>
