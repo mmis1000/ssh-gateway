@@ -5,6 +5,8 @@
     "httpHost": "gateway.do.mmis1000.me",
     "httpPort": 80,
     "httpListen": 11080,
+    "socksHost": "do.mmis1000.me",
+    "socksPort": 11081,
     "trustedProxy": "localhost",
     "saveDir": "save"
 }
