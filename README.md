@@ -1,4 +1,7 @@
 # SSH Gateway
+
+[![Greenkeeper badge](https://badges.greenkeeper.io/mmis1000/ssh-gateway.svg)](https://greenkeeper.io/)
+
 a proxy to create reverse tunnel, port forward, authication and domain in one command
 
 # Setup
