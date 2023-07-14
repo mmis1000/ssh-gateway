@@ -131,7 +131,7 @@ else
 fi
 
 
-$(which sshd) -D -f $WORKDIR/sshd_config -p $LISTEN_PORT >> "$WORKDIR/sshd.log" &
+$(which sshd) -D -f $WORKDIR/sshd_config -p $LISTEN_PORT -e >> "$WORKDIR/sshd.log" 2>> "$WORKDIR/sshd.err" &
 ssh -N            -i "$WORKDIR/id_rsa" -p $TARGET_PORT    -M -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no"                              $TARGET_USER@$TARGET_HOST& # spawn the master
 sleep 5
 echo 'preparing to register client...'
