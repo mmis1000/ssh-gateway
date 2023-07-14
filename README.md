@@ -9,7 +9,7 @@ a proxy to create reverse tunnel, port forward, authication and domain in one co
 
 # Usage
 
-    curl http://<your domain>/setup > run.sh
+    curl https://<your domain>/setup > run.sh
     chmod 755 run.sh
     ./run.sh
 

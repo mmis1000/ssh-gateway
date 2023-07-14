@@ -2,11 +2,14 @@
     "sshHost": "do.mmis1000.me",
     "sshPort": 11020,
     "sshListen": 11020,
+    "httpProtocol": "https",
     "httpHost": "gateway.do.mmis1000.me",
-    "httpPort": 80,
+    "httpPort": 443,
     "httpListen": 11080,
     "socksHost": "do.mmis1000.me",
     "socksPort": 11081,
+    "userListenPortLow": 30020,
+    "userListenPortHigh": 30099,
     "trustedProxy": "localhost",
     "saveDir": "save"
 }
