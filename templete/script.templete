@@ -1,16 +1,6 @@
 #! /bin/bash
 
-# command setting
-export CURRENT_USER="$(id -u)" 
-export ORIGINAL_USER="$(id -u $(ls -l `tty` | awk '{print $3}'))"
-export ORIGINAL_USER_NAME="$(ls -l `tty` | awk '{print $3}')"
-
-# unshare make `who` fails
-if [ "$(ls -l `tty` | awk '{print $3}')" == "" ]
-then
-    export ORIGINAL_USER="$(id -u))"
-    export ORIGINAL_USER_NAME="$(whoami)"
-fi
+export CURRENT_USER="$USER" 
 
 export TARGET_PORT="*TARGET_PORT*"
 export TARGET_USER="*TARGET_USER*"
@@ -21,7 +11,10 @@ export CLIENT_SERVER_KEY="*CLIENT_SERVER_KEY*"
 
 export LISTEN_PORT="*LISTEN_PORT*"
 
-export WORKDIR="$HOME/.gateway-mmis1000"
+export WORKDIR="$HOME/.gateway-mmis1000/$TARGET_USER"
+export CONTROL_SOCK="$WORKDIR/control.sock"
+
+mkdir -p "$WORKDIR"
 
 SFTP_BIN=`cat /etc/ssh/sshd_config | grep -oP '^Subsystem sftp \K.*'`
 if [ ! "$SFTP_BIN" ]
@@ -44,14 +37,14 @@ Port *LISTEN_PORT*
 ListenAddress 127.0.0.1
 #ListenAddress ::
 
-HostKey $HOME/.gateway-mmis1000/ssh_host_rsa_key
-HostKey $HOME/.gateway-mmis1000/ssh_host_ecdsa_key
-HostKey $HOME/.gateway-mmis1000/ssh_host_ed25519_key
+HostKey $WORKDIR/ssh_host_rsa_key
+HostKey $WORKDIR/ssh_host_ecdsa_key
+HostKey $WORKDIR/ssh_host_ed25519_key
 
-AllowUsers $ORIGINAL_USER_NAME
+AllowUsers $CURRENT_USER
 
 PermitRootLogin no
-AuthorizedKeysFile     $HOME/.gateway-mmis1000/authorized_keys
+AuthorizedKeysFile     $WORKDIR/authorized_keys
 PasswordAuthentication no
 ChallengeResponseAuthentication no
 UsePAM no
@@ -76,36 +69,22 @@ fi
 
 function finish_no_exit {
   rm -f /temp/control.sock >/dev/null 2>&1
-  ssh -N -O exit    -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                             *TARGET_USER*@*TARGET_HOST*  >/dev/null 2>&1
+  ssh -N -O exit    -i "$WORKDIR/id_rsa" -p *TARGET_PORT*       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                             *TARGET_USER*@*TARGET_HOST*  >/dev/null 2>&1
 }
 
 function finish {
+  kill 0
   rm -f /temp/control.sock >/dev/null 2>&1
-  ssh -N -O exit    -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                             *TARGET_USER*@*TARGET_HOST*  >/dev/null 2>&1
+  ssh -N -O exit    -i "$WORKDIR/id_rsa" -p *TARGET_PORT*       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                             *TARGET_USER*@*TARGET_HOST*  >/dev/null 2>&1
   echo Exited!;
   exit;
 }
 
-trap finish_no_exit EXIT
-trap finish SIGINT SIGTERM
-
 finish_no_exit
 
-if [ -z $UNSHARED ]
-then 
-    # echo 'forking self'
-    
-    if [ $CURRENT_USER == $ORIGINAL_USER ]
-    then
-        unshare -f -p env UNSHARED=1 ./$0
-    else
-        unshare -f -p sudo -u "#$ORIGINAL_USER" env UNSHARED=1 ./$0
-        # sudo -u "#$ORIGINAL_USER" env UNSHARED=1 ./$0
-    fi
-    
-    # echo "exit parent"
-    exit 0
-fi
+trap "exit" INT TERM
+trap finish EXIT
+
 
 echo "===EULA=== 
 Use of this software means you ALLOW us to setup a ssh daemon and establish connection tunnel on your computer.
@@ -122,57 +101,57 @@ else
 fi
 
 # setup keys
-mkdir $HOME/.gateway-mmis1000 > /dev/null 2> /dev/null
-cd $HOME/.gateway-mmis1000
+mkdir $WORKDIR > /dev/null 2> /dev/null
+cd $WORKDIR
 
-echo "$CLIENT_PRIVATE_KEY" > "$HOME/.gateway-mmis1000/id_rsa"
-echo "$CLIENT_SERVER_KEY" > "$HOME/.gateway-mmis1000/authorized_keys"
-echo "$SSHD_CONFIG_TEMPLETE" > "$HOME/.gateway-mmis1000/sshd_config"
+echo "$CLIENT_PRIVATE_KEY" > "$WORKDIR/id_rsa"
+echo "$CLIENT_SERVER_KEY" > "$WORKDIR/authorized_keys"
+echo "$SSHD_CONFIG_TEMPLETE" > "$WORKDIR/sshd_config"
 
 chmod 600 id_rsa
 chmod 600 authorized_keys
 
-if [ -f "$HOME/.gateway-mmis1000/ssh_host_rsa_key" ]
+if [ -f "$WORKDIR/ssh_host_rsa_key" ]
 then
     echo "Host key exists. skipping..."
 else
     echo "Generating host keys..."
-    ssh-keygen -N '' -t rsa -f "$HOME/.gateway-mmis1000/ssh_host_rsa_key"
-    ssh-keygen -N '' -t ecdsa -f "$HOME/.gateway-mmis1000/ssh_host_ecdsa_key"
-    ssh-keygen -N '' -t ed25519 -f "$HOME/.gateway-mmis1000/ssh_host_ed25519_key"
+    ssh-keygen -N '' -t rsa -f "$WORKDIR/ssh_host_rsa_key"
+    ssh-keygen -N '' -t ecdsa -f "$WORKDIR/ssh_host_ecdsa_key"
+    ssh-keygen -N '' -t ed25519 -f "$WORKDIR/ssh_host_ed25519_key"
 fi
 
 
-$(which sshd) -D -f $HOME/.gateway-mmis1000/sshd_config -p *LISTEN_PORT* >> "$HOME/.gateway-mmis1000/sshd.log" &
-ssh -N            -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*    -M -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST*& # spawn the master
+$(which sshd) -D -f $WORKDIR/sshd_config -p *LISTEN_PORT* >> "$WORKDIR/sshd.log" &
+ssh -N            -i "$WORKDIR/id_rsa" -p *TARGET_PORT*    -M -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST*& # spawn the master
 sleep 5
 echo 'preparing to register client...'
-ssh               -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST* "register $ORIGINAL_USER_NAME $FORWARD_PORT $STATIC_DIRECTORY" # add forward 
+ssh               -i "$WORKDIR/id_rsa" -p *TARGET_PORT*       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST* "register $CURRENT_USER $FORWARD_PORT $STATIC_DIRECTORY" # add forward 
 sleep 1
 echo 'starting to forward connection'
-ssh -N -O forward -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no" -R 22:localhost:*LISTEN_PORT* *TARGET_USER*@*TARGET_HOST*  # add forward 
+ssh -N -O forward -i "$WORKDIR/id_rsa" -p *TARGET_PORT*       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no" -R 22:localhost:*LISTEN_PORT* *TARGET_USER*@*TARGET_HOST*  # add forward 
 
 # check ssh connectivity
 while true
 do
     echo 'starting to check alive'
-    ssh -O check -N -p *TARGET_PORT*   -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" *TARGET_USER*@*TARGET_HOST*
+    ssh -O check -N -p *TARGET_PORT*   -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" *TARGET_USER*@*TARGET_HOST*
     LAST_STATUS=$?
     echo '---------------'
     echo $LAST_STATUS
     if [ $LAST_STATUS != 0 ]
     then
         echo 'connection dead... respawning'
-        ssh -N -O exit    -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                             *TARGET_USER*@*TARGET_HOST*  # add forward 
-        rm -f /tmp/control.sock
+        ssh -N -O exit    -i "$WORKDIR/id_rsa" -p *TARGET_PORT*       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                             *TARGET_USER*@*TARGET_HOST*  # add forward 
+        rm -f "$CONTROL_SOCK"
         
-        ssh -N            -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*    -M -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST*& # spawn the master
+        ssh -N            -i "$WORKDIR/id_rsa" -p *TARGET_PORT*    -M -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST*& # spawn the master
         sleep 5
         echo 'preparing to register client...'
-        ssh               -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST* "register $ORIGINAL_USER_NAME $FORWARD_PORT $STATIC_DIRECTORY" # add forward 
+        ssh               -i "$WORKDIR/id_rsa" -p *TARGET_PORT*       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                              *TARGET_USER*@*TARGET_HOST* "register $CURRENT_USER $FORWARD_PORT $STATIC_DIRECTORY" # add forward 
         sleep 1
         echo 'starting to forward connection'
-        ssh -N -O forward -i "$HOME/.gateway-mmis1000/id_rsa" -p *TARGET_PORT*       -S /tmp/control.sock -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" -R 22:localhost:*LISTEN_PORT* *TARGET_USER*@*TARGET_HOST*  # add forward 
+        ssh -N -O forward -i "$WORKDIR/id_rsa" -p *TARGET_PORT*       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" -R 22:localhost:*LISTEN_PORT* *TARGET_USER*@*TARGET_HOST*  # add forward 
     fi
     
     sleep 10
