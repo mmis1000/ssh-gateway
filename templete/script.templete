@@ -54,6 +54,7 @@ AllowUsers $CURRENT_USER
 
 PermitRootLogin no
 AuthorizedKeysFile     $WORKDIR/authorized_keys
+PidFile                $WORKDIR/sshd.pid
 PasswordAuthentication no
 ChallengeResponseAuthentication no
 UsePAM no
