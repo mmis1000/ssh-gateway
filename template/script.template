@@ -58,7 +58,7 @@ then
     fi
 fi
 
-# templete
+# template
 export SSHD_CONFIG_TEMPLETE="
 Port $LISTEN_PORT
 #AddressFamily any
