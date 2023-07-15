@@ -30,5 +30,9 @@
   "bugs": {
     "url": "https://github.com/mmis1000/ssh-gateway/issues"
   },
-  "homepage": "https://github.com/mmis1000/ssh-gateway#readme"
+  "homepage": "https://github.com/mmis1000/ssh-gateway#readme",
+  "devDependencies": {
+    "@types/node": "^20.4.2",
+    "typescript": "^5.1.6"
+  }
 }
