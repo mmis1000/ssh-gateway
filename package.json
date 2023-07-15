@@ -4,6 +4,7 @@
   "description": "a proxy to create reverse tunnel, port forward, authication and domain in one command",
   "main": "index.js",
   "scripts": {
+    "build": "tsc",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "mmis10002@gmail.com",
@@ -32,7 +33,15 @@
   },
   "homepage": "https://github.com/mmis1000/ssh-gateway#readme",
   "devDependencies": {
+    "@types/ejs": "^3.1.2",
+    "@types/express": "^4.17.17",
+    "@types/fs-extra": "^11.0.1",
+    "@types/http-proxy": "^1.17.11",
+    "@types/mime": "^3.0.1",
     "@types/node": "^20.4.2",
+    "@types/shell-quote": "^1.7.1",
+    "@types/ssh2": "^1.11.13",
+    "@types/ssh2-streams": "^0.1.9",
     "typescript": "^5.1.6"
   }
 }

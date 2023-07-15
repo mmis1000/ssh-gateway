@@ -1,14 +1,15 @@
-const getUserWithName = require("./user").getUserWithName;
+import { User, getUserWithName } from './user'
 const inspect = require('util').inspect;
-const socks = require('socksv5');
-const socksPasswordAuth = require("./socks5_auth_password.js");
-    
-module.exports = function(config) {
-    const srv = socks.createServer(function(info, accept, deny) {
+import { createServer } from 'socksv5';
+import socksPasswordAuth from "./socks5_auth_password.js";
+import { Config } from './interface';
+import { Duplex } from 'stream';
+export default function(config: Config) {
+    const srv = createServer(function(info, accept, deny) {
         const stream = accept(true);
         const userInfo = stream.userInfo;
         const dstPort = info.dstPort;
-        
+
         stream.pause();
         process.nextTick(function() {
            stream.pause();
@@ -33,7 +34,7 @@ module.exports = function(config) {
                 
                 console.log(`${userInfo.id}: [Socks5] Forward sock connection established at port ${dstPort}`);
                 
-                dstStream.on('error', function (err) {
+                dstStream.on('error', function (err?: Error) {
                     console.log(err);
                     try {
                         dstStream.destroy()
@@ -54,12 +55,12 @@ module.exports = function(config) {
         })
     });
     
-    srv.listen(config.socksPort, "0.0.0.0", function() {
-        console.log('SOCKS server listening on port ' + config.socksPort);
+    srv.listen(config.socksListen, "0.0.0.0", function() {
+        console.log('SOCKS server listening on port ' + config.socksListen);
     });
 
-    srv.useAuth(socksPasswordAuth(function(stream, user, password, cb) {
-        getUserWithName(user)
+    srv.useAuth(socksPasswordAuth(function(stream: Duplex & { user: string, userInfo: User }, user: string, password: string, cb: (success: boolean | Error) => void) {
+        getUserWithName(config.saveDir, user)
         .then(function (userInfo) {
             stream.user = user;
             stream.userInfo = userInfo;

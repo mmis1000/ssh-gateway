@@ -1,3 +1,4 @@
 save/
 node_modules/
 ssh_host_*
+dist/

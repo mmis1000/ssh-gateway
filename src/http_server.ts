@@ -1,29 +1,29 @@
-/** @undindent-chained-methods */
-const http = require("http");
-const express = require("express");
-const inspect = require('util').inspect;
-const createUser = require("./user").createUser;
-const getUserWithName = require("./user").getUserWithName;
-const getUserWithDomain = require("./user").getUserWithDomain;
-const render = require("./template");
-const { promises: fs } = require("fs")
-const path = require("path");
-const mime = require("mime");
-const User = require("./user").User;
-const parseRange = require('range-parser');
-const range = require('express-range');
-const ejs = require("ejs");
-const ssh2_streams = require('ssh2-streams');
-const SFTPStream = ssh2_streams.SFTPStream;
-const {decodePath, encodePath} = require("./path_utils");
-const getFastReadStream = require("./ssh_fast_read_stream");
-const httpProxy = require('http-proxy');
+import { Config } from "./interface";
 
-module.exports = function(config) {
+/** @undindent-chained-methods */
+import http from "http";
+import express from "express";
+const inspect = require('util').inspect;
+import render from "./template";
+import { promises as fs } from "fs";
+import path from "path";
+import mime from "mime";
+import { User, createUser, getUserWithName, getUserWithDomain } from"./user";
+import parseRange from 'range-parser';
+import ejs from "ejs";
+import ssh2_streams from 'ssh2-streams';
+const SFTPStream = ssh2_streams.SFTPStream;
+import { decodePath, encodePath } from "./path_utils";
+import getFastReadStream from "./ssh_fast_read_stream";
+import httpProxy from 'http-proxy';
+import { AddressInfo } from "net";
+import { Duplex } from "stream";
+
+export default function(config: Config) {
     const router = express();
     const server = http.createServer(router);
 
-    var proxy = new httpProxy.createProxyServer({
+    var proxy = httpProxy.createProxyServer({
         target: {
             host: 'localhost',
             port: 65535
@@ -32,7 +32,7 @@ module.exports = function(config) {
 
     server.on('upgrade', function (req, socket, head) {
         
-        let domain = req.hostname ?? req.headers.host?.split(':')[0];
+        let domain = req.headers.host?.split(':')[0];
 
         if (!domain) {
             return
@@ -45,7 +45,7 @@ module.exports = function(config) {
 
         let id = domain.split('.')[0];
 
-        getUserWithDomain(id)
+        getUserWithDomain(config.saveDir, id)
         .then(function (user) {
             // ensure client exist
             return user.getClient()
@@ -56,8 +56,10 @@ module.exports = function(config) {
         .then(function (userData) {
             if (userData.httpPort !== 0) {
                 return userData.getClient().then(function (sshClient) {
-                    return [userData, sshClient]
+                    return [userData, sshClient] as const
                 })
+            } else {
+                throw Error('not in forward mode')
             }
         })
         .then(function ([userData, sshClient]) {
@@ -65,16 +67,16 @@ module.exports = function(config) {
                 proxy.ws(req, socket, head, {
                     target: {
                         host: 'localhost',
-                        port: userData.httpPort
+                        port: userData.httpPort!
                     },
                     agent: Object.assign(Object.create(http.Agent), {
-                        createConnection: function (opts, cb) {
-                            sshClient.forwardOut('localhost', 9999, 'localhost', userData.httpPort, function(err, stream) {
+                        createConnection: function (_opts: any, cb: (err?: Error, stream?: Duplex) => void) {
+                            sshClient.forwardOut('localhost', 9999, 'localhost', userData.httpPort!, function(err, stream) {
                                 if (err) {
                                     return cb(err);
                                 }
-                                console.log(`${userData.id}: [HTTP] Forward ${req.method} http connection established at ${req.originalUrl} of ${userData.domainName}`);
-                                cb(null, stream);
+                                console.log(`${userData.id}: [HTTP] Forward ${req.method} http connection established at ${req.url} of ${userData.domainName}`);
+                                cb(undefined, stream);
                             })
                         }
                     })
@@ -93,11 +95,6 @@ module.exports = function(config) {
     router.locals.decodePath = decodePath;
     router.locals.encodePath = encodePath;
     
-    router.use(range({
-        accept: 'bytes',
-        limit: 10,
-    }));
-
     router.use(function(req, res, next) {
         let domain = req.hostname;
 
@@ -107,7 +104,7 @@ module.exports = function(config) {
 
         let id = domain.split('.')[0];
 
-        getUserWithDomain(id)
+        getUserWithDomain(config.saveDir, id)
         .then(function (user) {
             // ensure client exist
             return user.getClient()
@@ -121,13 +118,16 @@ module.exports = function(config) {
                 .then(function(sshClient) {
                     let client = http.request({
                         createConnection: function(opts, cb) {
-                            sshClient.forwardOut('localhost', 9999, 'localhost', userData.httpPort, function(err, stream) {
+                            sshClient.forwardOut('localhost', 9999, 'localhost', userData.httpPort!, function(err, stream) {
                                 if (err) {
-                                    return cb(err);
+                                    return cb(err, null as never);
                                 }
                                 console.log(`${userData.id}: [HTTP] Forward ${req.method} http connection established at ${req.originalUrl} of ${userData.domainName}`);
-                                cb(null, stream);
+                                // FIXME:  stream does not fully implement socket
+                                cb(null as never, stream as any);
                             })
+
+                            return undefined as never
                         },
                         headers: Object.assign({}, req.headers, {
                             "X-Forwarded-For": `${req.ip} 127.0.0.1`
@@ -147,7 +147,7 @@ module.exports = function(config) {
                     .pipe(client)
 
                     client.on('response', function(msg) {
-                        res.writeHeader(msg.statusCode, Object.assign({}, msg.headers, {
+                        res.writeHead(msg.statusCode!, Object.assign({}, msg.headers, {
                             "X-Proxy-User": userData.id
                         }))
 
@@ -169,7 +169,7 @@ module.exports = function(config) {
                 let reqPath = decodePath(req.path);
                 let baseDir = path.dirname(reqPath);
                 let baseName = path.basename(reqPath)
-                let fullPath = path.resolve(remoteMountPoint, reqPath.slice(1));
+                let fullPath = path.resolve(remoteMountPoint!, reqPath.slice(1));
                 let realBaseDir = path.dirname(fullPath);
                 let realBaseName = path.basename(fullPath)
                 
@@ -194,7 +194,7 @@ module.exports = function(config) {
                                 realPath = path.resolve(path.dirname(fullPath) + '/', realPath)
                                 console.log(`${userData.id}: [HTTP] real path: ${realPath}, mount point: ${remoteMountPoint}`);
 
-                                let relativePath = path.relative(remoteMountPoint, realPath);
+                                let relativePath = path.relative(remoteMountPoint!, realPath);
                                 console.log(`${userData.id}: [HTTP] path relative to root: ${relativePath}`)
 
                                 if (relativePath.indexOf('../') >= 0) {
@@ -218,7 +218,8 @@ module.exports = function(config) {
                                 }
 
                                 files = files.map(function(file) {
-                                    file.attrs = new SFTPStream.Stats(file.attrs);
+                                    // FIXME: undocumented api
+                                    file.attrs = new ((SFTPStream as any).Stats)(file.attrs);
                                     return file;
                                 })
 
@@ -233,25 +234,25 @@ module.exports = function(config) {
                             let size = stats.size;
                             let ext = path.extname(baseName);
                             let contentType = ext ? (mime.getType(ext) || 'application/octet-stream') : 'application/octet-stream';
-                            let range = req.headers.range ? parseRange(size, req.headers.range) : null;
-                            let readStream = null;
+                            // let range = req.headers.range ? parseRange(size, req.headers.range) : null;
+                            const range = req.range(stats.size)
+                            let readStream: ReturnType<typeof getFastReadStream> | null = null;
 
                             res.set('Content-Type', contentType);
-                            res.set('Content-Length', size);
+                            res.set('Content-Length', String(size));
 
-                            if (range === null) {
+                            if (range == null) {
                                 // readStream = sftpClient.createReadStream(fullPath);
                                 readStream = getFastReadStream(sftpClient, fullPath);
-                            } else if (range !== -1 && range.type === 'bytes' && range.length === 1) {
-                                res.set('Content-Length', range[0].end - range[0].start + 1);
+                            } else if (range !== -1 && range !== -2 && range.type === 'bytes' && range.length === 1) {
+                                res.set('Content-Length', String(range[0].end - range[0].start + 1));
 
-                                res.range({
-                                    first: range[0].start,
-                                    last: range[0].end,
-                                    length: size
-                                });
+                                res.setHeader('Range', `${range[0].start}-${range[0].end}`)
 
-                                let temp = {};
+                                let temp: {
+                                    start?: number,
+                                    end?: number
+                                } = {};
                                 if (range[0].start !== 0) {
                                     temp.start = range[0].start;
                                 }
@@ -273,6 +274,10 @@ module.exports = function(config) {
                                 if (req.closed) {
                                     return;
                                 }
+                                if (res.headersSent) {
+                                    res.end()
+                                    return
+                                }
                                 res.set('Content-Type', 'text/plain');
                                 res.set('Content-Length', '');
                                 res.status(500).end(err.stack ? err.stack : err.toString());
@@ -280,9 +285,9 @@ module.exports = function(config) {
                             
                             req.on('close', function () {
                                 
-                                req.closed = true;
+                                // req.closed = true;
                                 try {
-                                    readStream.destroy();
+                                    readStream?.destroy();
                                 } catch (err) {
                                     // nuzz
                                 }
@@ -318,7 +323,7 @@ module.exports = function(config) {
             return next();
         }
 
-        createUser()
+        createUser(config.saveDir)
             .then(function(userData) {
                 return Promise.all([userData, templatePromise])
             })
@@ -327,10 +332,10 @@ module.exports = function(config) {
 
                 res.end(render(template, {
                     TARGET_PORT: config.sshPort,
-                    TARGET_USER: userData.id,
+                    TARGET_USER: userData.id!,
                     TARGET_HOST: config.sshHost,
-                    CLIENT_PRIVATE_KEY: userData.privateKey,
-                    CLIENT_SERVER_KEY: userData.publicKey_pub,
+                    CLIENT_PRIVATE_KEY: userData.privateKey!,
+                    CLIENT_SERVER_KEY: userData.publicKey_pub!,
                     LISTEN_PORT_LOW: config.userListenPortLow,
                     LISTEN_PORT_HIGH: config.userListenPortHigh,
                 }))
@@ -347,8 +352,8 @@ module.exports = function(config) {
             return next();
         }
 
-        const authHeader = req.headers.authorization
-        const isBasicAuth = authHeader != null && authHeader.startsWith('Basic')
+        const authHeader = req.headers.authorization ?? ''
+        const isBasicAuth = authHeader && authHeader.startsWith('Basic')
 
         if (!isBasicAuth) {
             res.setHeader('WWW-Authenticate', 'Basic realm="Not authencated"')
@@ -362,7 +367,7 @@ module.exports = function(config) {
         const account = decodeURIComponent(str.split(':')[0] ?? '')
         const password = decodeURIComponent(str.split(':')[1] ?? '')
 
-        getUserWithName(account)
+        getUserWithName(config.saveDir, account)
         .then((userData) => {
             if (userData.password !== password) {
                 throw new Error('not authenticated')
@@ -377,10 +382,10 @@ module.exports = function(config) {
 
             res.end(render(template, {
                 TARGET_PORT: config.sshPort,
-                TARGET_USER: userData.id,
+                TARGET_USER: userData.id!,
                 TARGET_HOST: config.sshHost,
-                CLIENT_PRIVATE_KEY: userData.privateKey,
-                CLIENT_SERVER_KEY: userData.publicKey_pub,
+                CLIENT_PRIVATE_KEY: userData.privateKey!,
+                CLIENT_SERVER_KEY: userData.publicKey_pub!,
                 LISTEN_PORT_LOW: config.userListenPortLow,
                 LISTEN_PORT_HIGH: config.userListenPortHigh,
             }))
@@ -410,7 +415,7 @@ $ sudo ./run.sh
     })
 
     server.listen(config.httpListen || 8080, "0.0.0.0", function() {
-        let addr = server.address();
+        let addr = server.address() as AddressInfo;
         console.log("Http server listening at", addr.address + ":" + addr.port);
     });
 }

@@ -1,24 +1,25 @@
-const fs = require('fs');
-const crypto = require('crypto');
-const inspect = require('util').inspect;
-const net = require('net');
-const path = require('path');
-const parse = require('shell-quote/parse');
+import { Config } from "./interface";
 
-const buffersEqual = require('buffer-equal-constant-time');
-const ssh2 = require('ssh2');
+import fs from 'fs';
+const inspect = require('util').inspect;
+import path from 'path';
+import { parse } from 'shell-quote';
+
+import buffersEqual from 'buffer-equal-constant-time';
+import ssh2, { Connection } from 'ssh2';
+import { User, getUserWithName } from "./user"
+import { AddressInfo } from "net";
 const utils = ssh2.utils;
 
-const getUserWithName = require("./user").getUserWithName;
 
-module.exports = function(config) {
-    new ssh2.Server({
+export default function(config: Config) {
+    const server = new ssh2.Server({
         hostKeys: [
             fs.readFileSync(path.resolve(__dirname, '../ssh_host_rsa_key')),
             fs.readFileSync(path.resolve(__dirname, '../ssh_host_ecdsa_key')),
             fs.readFileSync(path.resolve(__dirname, '../ssh_host_ed25519_key')),
         ]
-    }, function(client) {
+    }, function(client: Connection & { userData?: User }) {
         console.log('A new ssh client connected!');
         
         client
@@ -36,14 +37,18 @@ module.exports = function(config) {
                 buffersEqual(ctx.key.data, pubKey.public)*/
             ) {
                 let username = ctx.username;
-                getUserWithName(username)
+                getUserWithName(config.saveDir, username)
                 .then(function (userData) {
                     if (!userData) {
                         return ctx.reject();
                     }
 
                     client.userData = userData;
-                    let parsed = utils.parseKey(userData.privateKey_pub)
+                    let parsed = utils.parseKey(userData.privateKey_pub!)
+
+                    if (parsed instanceof Error) {
+                        return ctx.reject(['publickey']);
+                    }
 
                     if (ctx.key.algo !== parsed.type) {
                         return ctx.reject(['publickey']);
@@ -53,11 +58,11 @@ module.exports = function(config) {
                         return ctx.reject(['publickey']);
                     }
                     
-                    if (ctx.signature) {
+                    if (ctx.blob && ctx.signature && (ctx as any).hashAlgo) {
                         // let verifier = crypto.createVerify(ctx.sigAlgo);
                         // verifier.update(ctx.blob);
 
-                        if (parsed.verify(ctx.blob, ctx.signature, ctx.hashAlgo)) {
+                        if (parsed.verify(ctx.blob, ctx.signature, (ctx as any).hashAlgo)) {
                             ctx.accept();
                         }
                         else {
@@ -79,33 +84,33 @@ module.exports = function(config) {
                 ctx.reject(['publickey']);
             }
         }).on('ready', function() {
-            console.log(`${client.userData.id}: [SSH] Client authenticated!`);
+            console.log(`${client.userData!.id}: [SSH] Client authenticated!`);
 
             client.on('session', function(accept, reject) {
                 let session = accept();
                 session.once('exec', function(accept, reject, info) {
-                    console.log(`${client.userData.id}: [SSH] Client wants to execute: ${inspect(info.command)}`);
-                    let temp = parse(info.command);
+                    console.log(`${client.userData!.id}: [SSH] Client wants to execute: ${inspect(info.command)}`);
+                    let temp = parse(info.command).map(i => String(i));
                     let stream = accept();
                     
                     if ((temp.length !== 3 && temp.length !== 4) || temp[0] !== 'register' || !temp[2].match(/^[1-9]\d*$|^0$/)) {
-                        console.log(`${client.userData.id}: [SSH] bad register command: ${inspect(info.command)}`);
+                        console.log(`${client.userData!.id}: [SSH] bad register command: ${inspect(info.command)}`);
                         stream.stderr.write('bad register command');
                         stream.exit(-1);
                     } else {
-                        client.userData.remoteUser = temp[1];
-                        client.userData.httpPort = parseInt(temp[2], 10);
+                        client.userData!.remoteUser = temp[1];
+                        client.userData!.httpPort = parseInt(temp[2], 10);
                         
-                        if (client.userData.httpPort === 0) {
+                        if (client.userData!.httpPort === 0) {
                             // force normalize th path;
-                            client.userData.staticDirectory = path.resolve('/', temp[3])
+                            client.userData!.staticDirectory = path.resolve('/', temp[3])
                         }
                         
-                        client.userData.emit('tunnel_client', client);
+                        client.userData!.emit('tunnel_client', client);
                         
-                        stream.write(`accepted. server is open at ${config.httpProtocol}://${client.userData.domainName}.${config.httpHost}:${config.httpPort}/
-socks v5 tunnel is opened at socks5://${client.userData.id}:${client.userData.password}@${config.socksHost}:${config.socksPort}
-to get new version of script, get it from ${config.httpProtocol}://${client.userData.id}:${client.userData.password}@${config.httpHost}:${config.httpPort}/update
+                        stream.write(`accepted. server is open at ${config.httpProtocol}://${client.userData!.domainName}.${config.httpHost}:${config.httpPort}/
+socks v5 tunnel is opened at socks5://${client.userData!.id}:${client.userData!.password}@${config.socksHost}:${config.socksPort}
+to get new version of script, get it from ${config.httpProtocol}://${client.userData!.id}:${client.userData!.password}@${config.httpHost}:${config.httpPort}/update
 `);
                         stream.exit(0);
                     }
@@ -115,30 +120,30 @@ to get new version of script, get it from ${config.httpProtocol}://${client.user
 
 
             client.on('request', function(accept, reject, name, info) {
-                console.log(`${client.userData.id}: [SSH] Client requested ${name} ${inspect(info)}`);
+                console.log(`${client.userData!.id}: [SSH] Client requested ${name} ${inspect(info)}`);
                 // reject();
-                if (name !== 'tcpip-forward' && name !== 'cancel-tcpip-forward') reject();
+                if (name !== 'tcpip-forward' && name !== 'cancel-tcpip-forward') reject!();
 
                 if (name === 'tcpip-forward') {
-                    if (client.userData.tunnelClient) {
-                        client.userData.tunnelClient.end();
-                        delete client.userData.tunnelClient;
+                    if (client.userData!.tunnelClient) {
+                        client.userData!.tunnelClient.end();
+                        client.userData!.tunnelClient = null;
                     }
 
-                    client.userData.tunnelClient = client;
-                    client.userData.tunnelInfo = info;
-                    client.userData.emit('tunnel_client', client);
-                    client.userData.createClient();
+                    client.userData!.tunnelClient = client;
+                    client.userData!.tunnelInfo = info;
+                    client.userData!.emit('tunnel_client', client);
+                    client.userData!.createClient();
                 }
 
                 if (name === 'cancel-tcpip-forward') {
-                    delete client.userData.tunnelClient;
-                    delete client.userData.tunnelInfo;
+                    client.userData!.tunnelClient = null;
+                    client.userData!.tunnelInfo = null;
                 }
             });
         }).on('end', function() {
             if (client.userData) {
-                delete client.userData.tunnelClient;
+                client.userData.tunnelClient = null;
                 client.userData.disconnectAll()
 
                 console.log(`${client.userData.id}: [SSH] Client disconnected`);
@@ -147,6 +152,6 @@ to get new version of script, get it from ${config.httpProtocol}://${client.user
             }
         });
     }).listen(config.sshListen, '0.0.0.0', function() {
-        console.log('SSH server listening on port ' + this.address().port);
+        console.log('SSH server listening on port ' + (server.address() as AddressInfo).port);
     });
 }

@@ -8,6 +8,7 @@
     "httpListen": 11080,
     "socksHost": "do.mmis1000.me",
     "socksPort": 11081,
+    "socksListen": 11081,
     "userListenPortLow": 30020,
     "userListenPortHigh": 30099,
     "trustedProxy": "localhost",

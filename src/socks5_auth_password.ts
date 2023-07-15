@@ -1,3 +1,5 @@
+import { Duplex } from "stream";
+
 var STATE_VERSION = 0,
     // server
     STATE_ULEN = 1,
@@ -11,20 +13,22 @@ var STATE_VERSION = 0,
 var BUF_SUCCESS = Buffer.from([0x01, 0x00]),
     BUF_FAILURE = Buffer.from([0x01, 0x01]);
 
-module.exports = function UserPasswordAuthHandlers() {
-  var authcb,
-      user,
-      pass,
-      userlen,
-      passlen;
+export default function UserPasswordAuthHandlers(...args: any[]) {
+  var authcb: (stream:Duplex, user: string, pass: string, cb: (success: boolean | Error) => void) => void,
+      user: string,
+      pass: string,
+      userBuffer: Buffer,
+      passBuffer: Buffer,
+      userlen: number,
+      passlen: number;
 
-  if (arguments.length === 1 && typeof arguments[0] === 'function')
-    authcb = arguments[0];
-  else if (arguments.length === 2
-           && typeof arguments[0] === 'string'
-           && typeof arguments[1] === 'string') {
-    user = arguments[0];
-    pass = arguments[1];
+  if (args.length === 1 && typeof args[0] === 'function')
+    authcb = args[0];
+  else if (args.length === 2
+           && typeof args[0] === 'string'
+           && typeof args[1] === 'string') {
+    user = args[0];
+    pass = args[1];
     userlen = Buffer.byteLength(user);
     passlen = Buffer.byteLength(pass);
     if (userlen > 255)
@@ -36,12 +40,12 @@ module.exports = function UserPasswordAuthHandlers() {
 
   return {
     METHOD: 0x02,
-    server: function serverHandler(stream, cb) {
+    server: function serverHandler(stream: Duplex, cb: (success: boolean | Error) => void) {
       var state = STATE_VERSION,
           userp = 0,
           passp = 0;
 
-      function onData(chunk) {
+      function onData(chunk: Buffer) {
         var i = 0,
             len = chunk.length,
             left,
@@ -75,21 +79,21 @@ module.exports = function UserPasswordAuthHandlers() {
               }
               ++i;
               ++state;
-              user = Buffer.alloc(ulen);
+              userBuffer = Buffer.alloc(ulen);
               userp = 0;
             break;
             case STATE_UNAME:
               left = user.length - userp;
               chunkLeft = len - i;
               minLen = (left < chunkLeft ? left : chunkLeft);
-              chunk.copy(user,
+              chunk.copy(userBuffer,
                          userp,
                          i,
                          i + minLen);
               userp += minLen;
               i += minLen;
               if (userp === user.length) {
-                user = user.toString('utf8');
+                user = userBuffer.toString('utf8');
                 ++state;
               }
             break;
@@ -102,14 +106,14 @@ module.exports = function UserPasswordAuthHandlers() {
               }
               ++i;
               ++state;
-              pass = Buffer.alloc(plen);
+              passBuffer = Buffer.alloc(plen);
               passp = 0;
             break;
             case STATE_PASSWD:
               left = pass.length - passp;
               chunkLeft = len - i;
               minLen = (left < chunkLeft ? left : chunkLeft);
-              chunk.copy(pass,
+              chunk.copy(passBuffer,
                          passp,
                          i,
                          i + minLen);
@@ -117,7 +121,7 @@ module.exports = function UserPasswordAuthHandlers() {
               i += minLen;
               if (passp === pass.length) {
                 stream.removeListener('data', onData);
-                pass = pass.toString('utf8');
+                pass = passBuffer.toString('utf8');
                 state = STATE_VERSION;
                 if (i < len)
                   stream.unshift(chunk.slice(i));
