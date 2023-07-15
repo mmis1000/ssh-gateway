@@ -2,9 +2,25 @@
 
 export CURRENT_USER="$USER" 
 
+unameOut="$(uname -s)"
+case "${unameOut}" in
+    Linux*)     machine=Linux;;
+    Darwin*)    machine=Mac;;
+    CYGWIN*)    machine=Cygwin;;
+    MINGW*)     machine=MinGw;;
+    MSYS_NT*)   machine=Git;;
+    *)          machine="UNKNOWN:${unameOut}"
+esac
+
 function get_unused_port {
     range=(`seq *LISTEN_PORT_LOW* *LISTEN_PORT_HIGH*`)
-    ports=`netstat -anp tcp | grep LISTEN | grep '\d\+' | awk '{print $4}' | awk '{n=split($1,A,":"); print A[n]}' | uniq -u`
+    if [ $machine == "Mac" ]
+    then
+        # why on the earth use dot to separate port ???
+        ports=`netstat -anp tcp | grep LISTEN | grep '\d\+' | awk '{print $4}' | awk '{n=split($1,A,"."); print A[n]}' | uniq -u`
+    else
+        ports=`netstat -anp tcp | grep LISTEN | grep '\d\+' | awk '{print $4}' | awk '{n=split($1,A,":"); print A[n]}' | uniq -u`
+    fi
     unused_ports=(`echo ${range[@]} ${ports[@]} ${ports[@]} | tr ' ' '\n' | sort | uniq -u`)
     unused_ports_size=${#unused_ports[@]}
     index=$(($RANDOM % $unused_ports_size))
@@ -25,7 +41,7 @@ export CONTROL_SOCK="$WORKDIR/control.sock"
 
 mkdir -p "$WORKDIR"
 
-SFTP_BIN=`cat /etc/ssh/sshd_config | grep -oP '^Subsystem sftp \K.*'`
+SFTP_BIN=`cat /etc/ssh/sshd_config | grep $'^Subsystem\t* *sftp' | awk '{print $3}'`
 if [ ! "$SFTP_BIN" ]
 then
     if [ -f '/usr/lib/openssh/sftp-server' ]
@@ -34,6 +50,9 @@ then
     elif [ -f '/usr/lib/ssh/sftp-server' ]
     then
         SFTP_BIN='/usr/lib/ssh/sftp-server'
+    elif [ -f '/usr/libexec/sftp-server' ]
+    then
+        SFTP_BIN='/usr/libexec/sftp-server'
     else
         SFTP_BIN='internal-sftp'
     fi
@@ -78,15 +97,15 @@ then
 fi
 
 function finish_no_exit {
-  rm -f /temp/control.sock >/dev/null 2>&1
   ssh -N -O exit    -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                             $TARGET_USER@$TARGET_HOST  >/dev/null 2>&1
+  rm -f "$CONTROL_SOCK" >/dev/null 2>&1
 }
 
 function finish {
-  kill 0
-  rm -f /temp/control.sock >/dev/null 2>&1
   ssh -N -O exit    -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                             $TARGET_USER@$TARGET_HOST  >/dev/null 2>&1
+  rm -f "$CONTROL_SOCK" >/dev/null 2>&1
   echo Exited!;
+  kill 0
   exit;
 }
 
@@ -101,13 +120,26 @@ Use of this software means you ALLOW us to setup a ssh daemon and establish conn
 If you do not agree about this, please enter ^C to exit right now!
 =========="
 read -p "press any key to continue..." -n 1
-read -p "Forward which port as the http entry (0 to use static directory instead)?: " -i "8080" -e FORWARD_PORT
+
+if [ $machine == "Mac" ]
+then
+    read -p "Forward which port as the http entry (0 to use static directory instead)? (default: 8080): " -e FORWARD_PORT
+    [ -z "$FORWARD_PORT" ] && FORWARD_PORT="8080"
+else
+    read -p "Forward which port as the http entry (0 to use static directory instead)?: " -i "8080" -e FORWARD_PORT
+fi
 
 if [ "$FORWARD_PORT" != 0 ]
 then
     STATIC_DIRECTORY="null"
 else
-    read -p "use which static directory?: " -i "$(pwd)" -e STATIC_DIRECTORY
+    if [ $machine == "Mac" ]
+    then
+        read -p "use which static directory? (default: $(pwd)): " -e STATIC_DIRECTORY
+        [ -z "$STATIC_DIRECTORY" ] && STATIC_DIRECTORY="$(pwd)"
+    else
+        read -p "use which static directory?: " -i "$(pwd)" -e STATIC_DIRECTORY
+    fi
 fi
 
 # setup keys
@@ -136,7 +168,7 @@ $(which sshd) -D -f $WORKDIR/sshd_config -p $LISTEN_PORT -e >> "$WORKDIR/sshd.lo
 ssh -N            -i "$WORKDIR/id_rsa" -p $TARGET_PORT    -M -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no"                              $TARGET_USER@$TARGET_HOST& # spawn the master
 sleep 5
 echo 'preparing to register client...'
-ssh               -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no"                              $TARGET_USER@$TARGET_HOST "register $CURRENT_USER $FORWARD_PORT $STATIC_DIRECTORY" # add forward 
+ssh               -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no"                              $TARGET_USER@$TARGET_HOST "register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")" # add forward 
 sleep 1
 echo 'starting to forward connection'
 ssh -N -O forward -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no" -R 22:localhost:$LISTEN_PORT $TARGET_USER@$TARGET_HOST  # add forward 
@@ -158,7 +190,7 @@ do
         ssh -N            -i "$WORKDIR/id_rsa" -p $TARGET_PORT    -M -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no"                              $TARGET_USER@$TARGET_HOST& # spawn the master
         sleep 5
         echo 'preparing to register client...'
-        ssh               -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                              $TARGET_USER@$TARGET_HOST "register $CURRENT_USER $FORWARD_PORT $STATIC_DIRECTORY" # add forward 
+        ssh               -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                              $TARGET_USER@$TARGET_HOST "register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")" # add forward 
         sleep 1
         echo 'starting to forward connection'
         ssh -N -O forward -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" -R 22:localhost:$LISTEN_PORT $TARGET_USER@$TARGET_HOST  # add forward 
