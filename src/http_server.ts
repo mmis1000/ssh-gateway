@@ -434,7 +434,7 @@ Run following command to setup the forward !!!
 
 $ curl -X POST${config.setupRequireAuth ? ' -u \'username:password\'': ''} ${config.httpProtocol}://${config.httpHost}:${config.httpPort}/setup > run.sh
 $ chmod 755 run.sh
-$ sudo ./run.sh
+$ ./run.sh
 `)
     })
 
