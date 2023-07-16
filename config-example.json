@@ -12,5 +12,8 @@
     "userListenPortLow": 30020,
     "userListenPortHigh": 30099,
     "trustedProxy": "localhost",
-    "saveDir": "save"
+    "saveDir": "save",
+    "setupRequireAuth": true,
+    "setupAccount": "",
+    "setupPassword": ""
 }

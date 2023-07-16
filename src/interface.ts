@@ -25,5 +25,12 @@ export interface Config {
     "userListenPortHigh": number,
     "trustedProxy": string,
     /** save directory */
-    "saveDir": string
+    "saveDir": string,
+    /** requires basic authentication to setup new forward */
+    "setupRequireAuth": boolean,
+    /** setup authentication account */
+    "setupAccount": string,
+    /** setup authentication password */
+    "setupPassword": string,
+
 }

@@ -316,11 +316,35 @@ export default function(config: Config) {
 
     const templatePromise = fs.readFile(path.join(__dirname, '../template/script.template'), 'utf8')
 
-    router.get('/setup', function(req, res, next) {
+    router.post('/setup', function(req, res, next) {
         let domain = req.hostname;
 
         if (domain !== config.httpHost) {
             return next();
+        }
+
+        if (config.setupRequireAuth) {
+            const authHeader = req.headers.authorization ?? ''
+            const isBasicAuth = authHeader && authHeader.startsWith('Basic')
+            
+            if (!isBasicAuth) {
+                res.setHeader('WWW-Authenticate', 'Basic realm="Not authencated"')
+                res.status(401)
+                res.end('')
+                return
+            }
+
+            const base64Str = authHeader.replace('Basic', '').trim()
+            const str = Buffer.from(base64Str, 'base64').toString('utf8')
+
+            const account = decodeURIComponent(str.split(':')[0] ?? '')
+            const password = decodeURIComponent(str.split(':')[1] ?? '')
+
+            if (account !== config.setupAccount || password !== config.setupPassword) {
+                res.status(401)
+                res.end('bad credential')
+                return
+            }
         }
 
         createUser(config.saveDir)
@@ -408,7 +432,7 @@ export default function(config: Config) {
         res.end(`
 Run following command to setup the forward !!!
 
-$ curl ${config.httpProtocol}://${config.httpHost}:${config.httpPort}/setup > run.sh
+$ curl -X POST${config.setupRequireAuth ? ' -u \'username:password\'': ''} ${config.httpProtocol}://${config.httpHost}:${config.httpPort}/setup > run.sh
 $ chmod 755 run.sh
 $ sudo ./run.sh
 `)
@@ -417,5 +441,6 @@ $ sudo ./run.sh
     server.listen(config.httpListen || 8080, "0.0.0.0", function() {
         let addr = server.address() as AddressInfo;
         console.log("Http server listening at", addr.address + ":" + addr.port);
+        console.log("Http server exposed at", `${config.httpProtocol}://${config.httpHost}:${config.httpPort}/`);
     });
 }
