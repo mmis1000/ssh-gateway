@@ -1,14 +1,19 @@
 # SSH Gateway
 
-a proxy to create reverse tunnel, port forward, authentication and domain in one command
+A proxy to create reverse tunnel, port forward, authentication and domain in one command
 
 ~~basically a ngrok clone~~
+
+Besides port forward, this also supports serving a static directory through a http domain (powered by sftp),
+essentially a static http server without http server.
+
+All without a dedicated client on your computer (only a script that use `openssh-server` and `ssh`).
 
 ## Supports
 
 1. mac: yes
 2. linux: yes
-3. windows: use wsl instead
+3. windows: use wsl instead (I don't know how to write a proper powershell or cmd file)
 
 ## Setup
 
@@ -21,7 +26,7 @@ a proxy to create reverse tunnel, port forward, authentication and domain in one
 
 ## Usage
 
-    curl https://<your domain>/setup > run.sh
+    curl -X POST https://<your domain>/setup > run.sh
     chmod 755 run.sh
     ./run.sh
 
