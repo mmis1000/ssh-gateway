@@ -152,6 +152,7 @@ class User extends EventEmitter {
             let id: ReturnType<typeof setTimeout> | null = null;
 
             const handle = (client: Client | PromiseLike<Client>) => {
+                this.failedCreateClientCount = 0
                 if (id != null) {
                     clearTimeout(id);
                 }
@@ -178,7 +179,7 @@ class User extends EventEmitter {
                 resolve(this.sshClient!);
             }
 
-            setTimeout(onTimeout.bind(this), timeout);
+            id = setTimeout(onTimeout.bind(this), timeout);
         });
     }
     createSftp() {
