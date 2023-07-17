@@ -10,6 +10,8 @@ import { Connection, TcpipBindInfo } from "ssh2";
 
 // const saveDir = path.resolve(__dirname, '../', config.saveDir);
 
+const MAX_FAILED_CREATE_CLIENT = 3
+
 function randId() {
     return Math.random().toString(36).substr(2, 10);
 }
@@ -48,6 +50,7 @@ class User extends EventEmitter {
     tunnelInfo: TcpipBindInfo | null
     sshClient: Client | null
     sftpClient: SFTPWrapper | null
+    failedCreateClientCount = 0
 
     saveDir: string
     constructor(saveDir: string, data: UserData) {
@@ -157,6 +160,14 @@ class User extends EventEmitter {
 
             const onTimeout = () => {
                 this.removeListener('ssh_client', handle);
+                this.failedCreateClientCount++
+                if (this.failedCreateClientCount >= MAX_FAILED_CREATE_CLIENT) {
+                    console.error('[User] The tunnel is probably broken, dropping...')
+                    this.failedCreateClientCount = 0
+                    this.tunnelClient?.end()
+                    this.tunnelClient = null
+                    this.tunnelInfo = null
+                }
                 reject(new Error('client connection timeout'));
             }
 
