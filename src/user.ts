@@ -173,13 +173,13 @@ class User extends EventEmitter {
             }
 
             if (this.sshState !== User.SSH_CLIENT_STATE.CONNECT) {
+                id = setTimeout(onTimeout.bind(this), timeout);
                 this.createClient();
                 this.once('ssh_client', handle);
             } else {
                 resolve(this.sshClient!);
             }
 
-            id = setTimeout(onTimeout.bind(this), timeout);
         });
     }
     createSftp() {
