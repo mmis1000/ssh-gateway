@@ -85,6 +85,18 @@ class User extends EventEmitter {
             (this as any)[key] = (data as any)[key];
         }
     }
+
+    resetConnection() {
+        this.sshState = User.SSH_CLIENT_STATE.DISCONNECT;
+
+        this.tunnelClient?.end()
+        this.tunnelClient = null
+        this.tunnelInfo = null
+
+        this.sftpState = User.SFTP_CLIENT_STATE.DISCONNECT;
+        this.sftpClient?.end()
+        this.sftpClient = null;
+    }
     createClient() {
         if (!this.tunnelClient || !this.tunnelInfo) {
             console.warn(`${this.id}: [User] Failed to create client because the tunnel is disconnected.`);
@@ -141,9 +153,8 @@ class User extends EventEmitter {
             });
 
             client.on('close', () => {
-                this.sshState = User.SSH_CLIENT_STATE.DISCONNECT;
-
-                this.createClient();
+                console.error('client error abort');
+                this.resetConnection()
             });
         });
     }
@@ -165,9 +176,7 @@ class User extends EventEmitter {
                 if (this.failedCreateClientCount >= MAX_FAILED_CREATE_CLIENT) {
                     console.error('[User] The tunnel is probably broken, dropping...')
                     this.failedCreateClientCount = 0
-                    this.tunnelClient?.end()
-                    this.tunnelClient = null
-                    this.tunnelInfo = null
+                    this.resetConnection()
                 }
                 reject(new Error('client connection timeout'));
             }

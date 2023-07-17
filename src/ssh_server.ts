@@ -26,6 +26,7 @@ export default function(config: Config) {
         .on('error', function (err) {
             if (client.userData) {
                 console.error(`${client.userData.id}: [SSH] ${inspect(err)}`);
+                client.userData.resetConnection()
             } else {
                 console.error(`<unknown user>: ${inspect(err)}`);
             }
