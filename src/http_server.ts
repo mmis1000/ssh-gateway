@@ -17,7 +17,7 @@ import { decodePath, encodePath } from "./path_utils";
 import getFastReadStream from "./ssh_fast_read_stream";
 import httpProxy from 'http-proxy';
 import { AddressInfo } from "net";
-import { Duplex } from "stream";
+import { Duplex, pipeline } from "stream";
 
 export default function(config: Config) {
     const router = express();
@@ -46,18 +46,15 @@ export default function(config: Config) {
         let id = domain.split('.')[0];
 
         getUserWithDomain(config.saveDir, id)
-        .then(function (user) {
+        .then(async function (user) {
             // ensure client exist
-            return user.getClient()
-            .then(function () {
-                return user
-            })
+            await user.getClient();
+            return user;
         })
-        .then(function (userData) {
+        .then(async function (userData) {
             if (userData.httpPort !== 0) {
-                return userData.getClient().then(function (sshClient) {
-                    return [userData, sshClient] as const
-                })
+                const sshClient = await userData.getClient();
+                return [userData, sshClient] as const;
             } else {
                 throw Error('not in forward mode')
             }
@@ -104,15 +101,27 @@ export default function(config: Config) {
 
         let id = domain.split('.')[0];
 
+        let aborted = false
+        req.on('error', () => {
+            aborted = true
+            try {
+                res.destroy()
+            } catch (err) {}
+        })
+
         getUserWithDomain(config.saveDir, id)
-        .then(function (user) {
+        .then(async function (user) {
+            if (aborted) {
+                throw new Error('aborted')
+            }
             // ensure client exist
-            return user.getClient()
-            .then(function () {
-                return user
-            })
+            await user.getClient();
+            return user;
         })
         .then(function(userData) {
+            if (aborted) {
+                throw new Error('aborted')
+            }
             if (userData.httpPort !== 0) {
                 userData.getClient()
                 .then(function(sshClient) {
@@ -140,22 +149,40 @@ export default function(config: Config) {
                         res.status(500).end(inspect(err))
                     })
 
-                    req
-                    .on('error', function(err) {
-                        res.status(500).end(inspect(err))
-                    })
-                    .pipe(client)
+                    pipeline(
+                        req,
+                        client,
+                        (error) => {
+                            if (error) {
+                                if (!res.headersSent) {
+                                    res.status(500).end(inspect(error))
+                                }
+                                try {
+                                    client.destroy()
+                                } catch (err) {}
+                            }
+                        }
+                    )
 
                     client.on('response', function(msg) {
                         res.writeHead(msg.statusCode!, Object.assign({}, msg.headers, {
                             "X-Proxy-User": userData.id
                         }))
 
-
-                        msg
-                        .on('error', function nuzz() {})
-                        .pipe(res)
-                        .on('error', function nuzz() {})
+                        pipeline(
+                            msg,
+                            res,
+                            (error) => {
+                                if (error) {
+                                    if (!res.headersSent) {
+                                        res.status(500).end(inspect(error))
+                                    }
+                                    try {
+                                        client.destroy()
+                                    } catch (err) {}
+                                }
+                            }
+                        )
                     })
                 })
                 .catch(function(err) {
@@ -310,7 +337,11 @@ export default function(config: Config) {
             // return res.end('not yet implement')
         })
         .catch(function(err) {
-            res.status(500).end(inspect(err))
+            if (!aborted) {
+                if (!res.headersSent) {
+                    res.status(500).end(inspect(err))
+                }
+            }
         })
     })
 
