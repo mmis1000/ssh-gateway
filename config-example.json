@@ -1,7 +1,7 @@
 {
     "httpPort": 443,
     "setupProtocol": "https",
-    "setupHost": "gateway.do.example.com",
+    "setupHost": "gateway.example.com",
     "setupPort": 443,
     "sshHost": "gateway.example.com",
     "sshPort": 11020,
