@@ -99,6 +99,19 @@ export default function(config: Config) {
             return next();
         }
 
+        if (req.url === '/robots.txt') {
+            res.end(`# robots.ext is explicitly hardcoded to disallow everything for abuse prevention
+User-agent: *
+Disallow: /
+`)
+            return
+        }
+
+        if (req.url.startsWith('/.well-known/acme-challenge/')) {
+            res.end(`Why?`)
+            return
+        }
+
         let id = domain.split('.')[0];
 
         let aborted = false
