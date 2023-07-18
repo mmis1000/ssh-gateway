@@ -109,9 +109,10 @@ export default function(config: Config) {
                         
                         client.userData!.emit('tunnel_client', client);
                         
-                        stream.write(`accepted. server is open at ${config.httpProtocol}://${client.userData!.domainName}.${config.httpHost}:${config.httpPort}/
-socks v5 tunnel is opened at socks5://${client.userData!.id}:${client.userData!.password}@${config.socksHost}:${config.socksPort}
-to get new version of script, get it from ${config.httpProtocol}://${client.userData!.id}:${client.userData!.password}@${config.httpHost}:${config.httpPort}/update
+                        stream.write(`Client accepted.
+Forward server is opened at ${config.httpProtocol}://${client.userData!.domainName}.${config.httpHost}:${config.httpPort}/
+Socks v5 tunnel is opened at socks5://${client.userData!.id}:${client.userData!.password}@${config.socksHost}:${config.socksPort}
+To get new version of current script, fetch it from ${config.setupProtocol}://${client.userData!.id}:${client.userData!.password}@${config.setupHost}:${config.setupPort}/update
 `);
                         stream.exit(0);
                     }

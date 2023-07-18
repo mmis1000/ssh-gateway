@@ -1,4 +1,14 @@
 export interface Config {
+    /** internal listen http server port,
+     * it is shared between setup domain and user content proxy 
+     */
+    "httpListen": number,
+    /** protocol of domain for retrieve config, update script */
+    "setupProtocol": string,
+    /** domain for retrieve config, update script */
+    "setupHost": string,
+    /** external domain port for retrieve config, update script */
+    "setupPort": string,
     /** external ssh server hostname */
     "sshHost": string,
     /** external ssh server port */
@@ -7,12 +17,10 @@ export interface Config {
     "sshListen": number,
     /** external http server protocol */
     "httpProtocol": string,
-    /** external http server hostname */
+    /** external http server hostname, used for serving ugc */
     "httpHost": string,
     /** external http server port */
     "httpPort": number,
-    /** internal listen http server port */
-    "httpListen": number,
     /** external socks5 server hostname */
     "socksHost": string,
     /** external socks5 server port */

@@ -33,6 +33,146 @@ interface UserData {
     privateKey_pub: string
 }
 
+interface TunnelStateClosed {
+    state: 'closed'
+    tunnelClient: null
+    tunnelInfo: null
+}
+
+interface TunnelStateOpened {
+    state: 'opened'
+    tunnelClient: Connection
+    tunnelInfo: TcpipBindInfo
+}
+
+interface ClientStateInitial {
+    state: 'initial'
+    client: null
+}
+
+interface ClientStateConnected {
+    state: 'connected'
+    client: Client
+}
+
+interface SftpStateInitial {
+    state: 'initial'
+    sftp: null
+}
+
+interface SftpStateConnected {
+    state: 'connected'
+    sftp: SFTPWrapper
+}
+
+const createTaskQueue = <Args extends any[], Result>(timeout: number, executer: (...args: Args) => Promise<Result>) => {
+    type Defer = {
+        getResolveFn: () => ((res: Result) => void)
+        getRejectFn: () => ((reason: any) => void) 
+        setResolveFn: (fn: ((res: Result) => void)) => void
+        setRejectFn: (fn: ((reason: any) => void)) => void
+    }
+    // whether there is active task running
+    let timeoutId: null | ReturnType<typeof setTimeout> = null
+    let resultPromise: null | Promise<Result> & Defer = null
+
+    const reset = () => {
+        if (timeoutId != null) {
+            clearTimeout(timeoutId)
+        }
+        timeoutId = null
+        resultPromise = null
+    }
+
+    const queue = {
+        isRequesting () {
+            return timeoutId != null
+        },
+        request (...args: Args) {
+            if (resultPromise != null) {
+                return resultPromise
+            }
+
+            let resolveFn: ((res: Result) => void) = null!
+            let rejectFn: ((reason: any) => void) = null!
+
+            const getResolveFn = () => {
+                return resolveFn
+            }
+
+            const getRejectFn = () => {
+                return rejectFn
+            }
+
+            const setResolveFn = (fn: ((res: Result) => void)) => {
+                resolveFn = fn
+            }
+            const setRejectFn = (fn: ((reason: any) => void)) => {
+                rejectFn = fn
+            }
+
+            const item = new Promise<Result>((resolve, reject) => {
+                resolveFn = resolve
+                rejectFn = reject
+            })
+
+            resultPromise = Object.assign(executer(...args).then(
+                (res) => { getResolveFn()(res); return res }, 
+                (err) => { getRejectFn()(err); throw err }
+            ), {
+                getResolveFn,
+                getRejectFn,
+                setResolveFn,
+                setRejectFn
+            })
+
+            timeoutId = setTimeout(() => {
+                reset()
+                getRejectFn()(new Error('timeout'))
+            }, timeout)
+
+            return item
+        },
+        externalResolve (res: Result) {
+            if (resultPromise == null) {
+                // we may get the result even before asked, but just keep it anyway
+                resultPromise = Object.assign(Promise.resolve(res), {
+                    getResolveFn: () => () => {},
+                    getRejectFn: () => () => {},
+                    setResolveFn: () => {},
+                    setRejectFn: () => {},
+                })
+                return
+            }
+            resultPromise?.getResolveFn()(res)
+        },
+        externalReject (err: any) {
+            if (resultPromise == null) {
+                // we may get the deny even before asked, but just keep it anyway
+                resultPromise = Object.assign(Promise.reject(err), {
+                    getResolveFn: () => () => {},
+                    getRejectFn: () => () => {},
+                    setResolveFn: () => {},
+                    setRejectFn: () => {},
+                })
+                return
+            }
+            resultPromise?.getRejectFn()(err)
+        },
+        reset () {
+            reset()
+        },
+        unsafeReset () {
+            // dust anything and don't even trigger callback even it supposed to
+            resultPromise?.setResolveFn(() => {})
+            resultPromise?.setRejectFn(() => {})
+            reset()
+        }
+    }
+
+    return queue
+}
+
 class User extends EventEmitter {
     id: string | null
     publicKey: string | null

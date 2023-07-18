@@ -38,7 +38,7 @@ export default function(config: Config) {
             return
         }
 
-        if (domain === config.httpHost) {
+        if (!domain.endsWith(config.httpHost) || domain === config.httpHost) {
             // do not proxy it
             return;
         }
@@ -95,7 +95,7 @@ export default function(config: Config) {
     router.use(function(req, res, next) {
         let domain = req.hostname;
 
-        if (domain === config.httpHost) {
+        if (!domain.endsWith(config.httpHost) || domain === config.httpHost) {
             return next();
         }
 
@@ -345,12 +345,23 @@ export default function(config: Config) {
         })
     })
 
+    router.use(function(req, res, next) {
+        let domain = req.hostname;
+
+        if (domain !== config.httpHost) {
+            return next();
+        }
+
+        res.end(`This is a domain that serves user content.
+To report abuse, go to ${config.setupProtocol}://${config.setupHost}:${config.setupPort}/report-abuse`)
+    })
+
     const templatePromise = fs.readFile(path.join(__dirname, '../template/script.template'), 'utf8')
 
     router.post('/setup', function(req, res, next) {
         let domain = req.hostname;
 
-        if (domain !== config.httpHost) {
+        if (domain !== config.setupHost) {
             return next();
         }
 
@@ -403,7 +414,7 @@ export default function(config: Config) {
     router.get('/update', function(req, res, next) {
         let domain = req.hostname;
 
-        if (domain !== config.httpHost) {
+        if (domain !== config.setupHost) {
             return next();
         }
 
@@ -456,14 +467,14 @@ export default function(config: Config) {
     router.get('/', function(req, res, next) {
         let domain = req.hostname;
 
-        if (domain !== config.httpHost) {
+        if (domain !== config.setupHost) {
             return next();
         }
 
         res.end(`
 Run following command to setup the forward !!!
 
-$ curl -X POST${config.setupRequireAuth ? ' -u \'username:password\'': ''} ${config.httpProtocol}://${config.httpHost}:${config.httpPort}/setup > run.sh
+$ curl -X POST${config.setupRequireAuth ? ' -u \'username:password\'': ''} ${config.setupProtocol}://${config.setupHost}:${config.setupPort}/setup > run.sh
 $ chmod 755 run.sh
 $ ./run.sh
 `)
