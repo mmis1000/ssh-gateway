@@ -205,6 +205,7 @@ class User {
         this.suicideRequestCount = 0
         if (this.suicideTimer != null) {
             clearTimeout(this.suicideTimer)
+            this.suicideTimer = null
         }
     }
 
