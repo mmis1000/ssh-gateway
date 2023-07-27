@@ -283,8 +283,7 @@ Disallow: /
                             } else if (range !== -1 && range !== -2 && range.type === 'bytes' && range.length === 1) {
                                 res.set('Content-Length', String(range[0].end - range[0].start + 1));
 
-                                res.setHeader('Range', `${range[0].start}-${range[0].end}`)
-
+                                res.set('Content-Range', `bytes ${range[0].start}-${range[0].end}/${stats.size}`)
                                 let temp: {
                                     start?: number,
                                     end?: number
