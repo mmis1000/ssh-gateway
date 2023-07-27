@@ -101,14 +101,12 @@ export default function(config: Config) {
                     } else {
                         client.userData!.remoteUser = temp[1];
                         client.userData!.httpPort = parseInt(temp[2], 10);
-                        
+
                         if (client.userData!.httpPort === 0) {
-                            // force normalize th path;
+                            // force normalize the path;
                             client.userData!.staticDirectory = path.resolve('/', temp[3])
                         }
-                        
-                        client.userData!.emit('tunnel_client', client);
-                        
+
                         stream.write(`Client accepted.
 Forward server is opened at ${config.httpProtocol}://${client.userData!.domainName}.${config.httpHost}:${config.httpPort}/
 Socks v5 tunnel is opened at socks5://${client.userData!.id}:${client.userData!.password}@${config.socksHost}:${config.socksPort}
@@ -127,25 +125,28 @@ To get new version of current script, fetch it from ${config.setupProtocol}://${
                 if (name !== 'tcpip-forward' && name !== 'cancel-tcpip-forward') reject!();
 
                 if (name === 'tcpip-forward') {
-                    if (client.userData!.tunnelClient) {
-                        client.userData!.tunnelClient.end();
-                        client.userData!.tunnelClient = null;
+                    console.log(`${client.userData!.id}: [SSH] Tunnel started!`);
+                    if (client.userData!.tunnelQueue.isRequesting()) {
+                        console.log(`${client.userData!.id}: [SSH] Is requesting tunnel`);
+                        client.userData!.tunnelQueue.externalResolve([client, info])
+                    } else {
+                        console.log(`${client.userData!.id}: [SSH] Is not requesting tunnel`);
+                        client.userData!.tunnelQueue.request().then((c) => {
+                            console.log('closed')
+                            c[0].end()
+                        }, () => {})
+                        client.userData!.tunnelQueue.reset()
+                        client.userData!.tunnelQueue.externalResolve([client, info])
                     }
-
-                    client.userData!.tunnelClient = client;
-                    client.userData!.tunnelInfo = info;
-                    client.userData!.emit('tunnel_client', client);
-                    client.userData!.createClient();
                 }
 
                 if (name === 'cancel-tcpip-forward') {
-                    client.userData!.tunnelClient = null;
-                    client.userData!.tunnelInfo = null;
+                    client.userData!.tunnelQueue.reset()
                 }
             });
         }).on('end', function() {
             if (client.userData) {
-                client.userData.tunnelClient = null;
+                client.userData.tunnelQueue.reset()
                 client.userData.disconnectAll()
 
                 console.log(`${client.userData.id}: [SSH] Client disconnected`);

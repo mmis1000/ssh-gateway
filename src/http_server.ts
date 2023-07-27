@@ -123,14 +123,6 @@ Disallow: /
         })
 
         getUserWithDomain(config.saveDir, id)
-        .then(async function (user) {
-            if (aborted) {
-                throw new Error('aborted')
-            }
-            // ensure client exist
-            await user.getClient();
-            return user;
-        })
         .then(function(userData) {
             if (aborted) {
                 throw new Error('aborted')
@@ -142,8 +134,10 @@ Disallow: /
                         createConnection: function(opts, cb) {
                             sshClient.forwardOut('localhost', 9999, 'localhost', userData.httpPort!, function(err, stream) {
                                 if (err) {
+                                    userData.requestSuicideTimer()
                                     return cb(err, null as never);
                                 }
+                                userData.clearSuicideTimer()
                                 console.log(`${userData.id}: [HTTP] Forward ${req.method} http connection established at ${req.originalUrl} of ${userData.domainName}`);
                                 // FIXME:  stream does not fully implement socket
                                 cb(null as never, stream as any);
@@ -199,6 +193,7 @@ Disallow: /
                     })
                 })
                 .catch(function(err) {
+                    userData.requestSuicideTimer()
                     res.status(500).end(inspect(err));
                 })
                 return;
@@ -215,6 +210,7 @@ Disallow: /
                 
                 userData.getSftp()
                 .then(function (sftpClient) {
+                    userData.clearSuicideTimer()
                     console.log(`${userData.id}: [HTTP] stating stat of ${fullPath}`);
                     sftpClient.lstat(fullPath, function(err, stats) {
                         console.log(`${userData.id}: [HTTP] got stat of ${fullPath}`);
@@ -342,6 +338,7 @@ Disallow: /
                     })
                 })
                 .catch(function(err) {
+                    userData.requestSuicideTimer()
                     res.status(500).end(inspect(err));
                 })
 

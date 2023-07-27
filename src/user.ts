@@ -1,16 +1,17 @@
 const inspect = require('util').inspect;
-import { Client, SFTPWrapper } from 'ssh2';
+import { Client, SFTPWrapper, ServerChannel } from 'ssh2';
 import path from "path";
 // import config from '../config.json';
 import fs from "fs-extra";
 const getRandomDomain = require("human-readable-ids").hri.random.bind(require("human-readable-ids").hri);
 import { ChildProcess, execFile as exec } from 'child_process'
-import { EventEmitter } from 'events'
 import { Connection, TcpipBindInfo } from "ssh2";
+import { createTaskQueue } from './utils';
 
 // const saveDir = path.resolve(__dirname, '../', config.saveDir);
 
-const MAX_FAILED_CREATE_CLIENT = 3
+const MAX_SUICIDE_REQUEST = 3
+const SUICIDE_DELAY = 30 * 1000
 
 function randId() {
     return Math.random().toString(36).substr(2, 10);
@@ -33,147 +34,8 @@ interface UserData {
     privateKey_pub: string
 }
 
-interface TunnelStateClosed {
-    state: 'closed'
-    tunnelClient: null
-    tunnelInfo: null
-}
 
-interface TunnelStateOpened {
-    state: 'opened'
-    tunnelClient: Connection
-    tunnelInfo: TcpipBindInfo
-}
-
-interface ClientStateInitial {
-    state: 'initial'
-    client: null
-}
-
-interface ClientStateConnected {
-    state: 'connected'
-    client: Client
-}
-
-interface SftpStateInitial {
-    state: 'initial'
-    sftp: null
-}
-
-interface SftpStateConnected {
-    state: 'connected'
-    sftp: SFTPWrapper
-}
-
-const createTaskQueue = <Args extends any[], Result>(timeout: number, executer: (...args: Args) => Promise<Result>) => {
-    type Defer = {
-        getResolveFn: () => ((res: Result) => void)
-        getRejectFn: () => ((reason: any) => void) 
-        setResolveFn: (fn: ((res: Result) => void)) => void
-        setRejectFn: (fn: ((reason: any) => void)) => void
-    }
-    // whether there is active task running
-    let timeoutId: null | ReturnType<typeof setTimeout> = null
-    let resultPromise: null | Promise<Result> & Defer = null
-
-    const reset = () => {
-        if (timeoutId != null) {
-            clearTimeout(timeoutId)
-        }
-        timeoutId = null
-        resultPromise = null
-    }
-
-    const queue = {
-        isRequesting () {
-            return timeoutId != null
-        },
-        request (...args: Args) {
-            if (resultPromise != null) {
-                return resultPromise
-            }
-
-            let resolveFn: ((res: Result) => void) = null!
-            let rejectFn: ((reason: any) => void) = null!
-
-            const getResolveFn = () => {
-                return resolveFn
-            }
-
-            const getRejectFn = () => {
-                return rejectFn
-            }
-
-            const setResolveFn = (fn: ((res: Result) => void)) => {
-                resolveFn = fn
-            }
-            const setRejectFn = (fn: ((reason: any) => void)) => {
-                rejectFn = fn
-            }
-
-            const item = new Promise<Result>((resolve, reject) => {
-                resolveFn = resolve
-                rejectFn = reject
-            })
-
-            resultPromise = Object.assign(executer(...args).then(
-                (res) => { getResolveFn()(res); return res }, 
-                (err) => { getRejectFn()(err); throw err }
-            ), {
-                getResolveFn,
-                getRejectFn,
-                setResolveFn,
-                setRejectFn
-            })
-
-            timeoutId = setTimeout(() => {
-                reset()
-                getRejectFn()(new Error('timeout'))
-            }, timeout)
-
-            return item
-        },
-        externalResolve (res: Result) {
-            if (resultPromise == null) {
-                // we may get the result even before asked, but just keep it anyway
-                resultPromise = Object.assign(Promise.resolve(res), {
-                    getResolveFn: () => () => {},
-                    getRejectFn: () => () => {},
-                    setResolveFn: () => {},
-                    setRejectFn: () => {},
-                })
-                return
-            }
-            resultPromise?.getResolveFn()(res)
-        },
-        externalReject (err: any) {
-            if (resultPromise == null) {
-                // we may get the deny even before asked, but just keep it anyway
-                resultPromise = Object.assign(Promise.reject(err), {
-                    getResolveFn: () => () => {},
-                    getRejectFn: () => () => {},
-                    setResolveFn: () => {},
-                    setRejectFn: () => {},
-                })
-                return
-            }
-            resultPromise?.getRejectFn()(err)
-        },
-        reset () {
-            reset()
-        },
-        unsafeReset () {
-            // dust anything and don't even trigger callback even it supposed to
-            resultPromise?.setResolveFn(() => {})
-            resultPromise?.setRejectFn(() => {})
-            reset()
-        }
-    }
-
-    return queue
-}
-
-class User extends EventEmitter {
+class User {
     id: string | null
     publicKey: string | null
     publicKey_pub: string | null
@@ -181,20 +43,21 @@ class User extends EventEmitter {
     privateKey_pub: string | null
     domainName: string | null
     password: string | null
-    sshState: number
+    // sshState: number
     remoteUser: string | null
     httpPort: number | null
-    sftpState: number
+    // sftpState: number
     staticDirectory: string | null
-    tunnelClient: Connection | null
-    tunnelInfo: TcpipBindInfo | null
-    sshClient: Client | null
-    sftpClient: SFTPWrapper | null
-    failedCreateClientCount = 0
+    // tunnelClient: Connection | null
+    // tunnelInfo: TcpipBindInfo | null
+    // sshClient: Client | null
+    // sftpClient: SFTPWrapper | null
+    suicideRequestCount = 0
+    suicideTimer: null | ReturnType<typeof setTimeout> = null
 
     saveDir: string
     constructor(saveDir: string, data: UserData) {
-        super()
+        // super()
 
         this.saveDir = saveDir
 
@@ -206,11 +69,11 @@ class User extends EventEmitter {
         this.domainName = null;
         this.password = null;
 
-        this.tunnelClient = null;
-        this.tunnelInfo = null;
+        // this.tunnelClient = null;
+        // this.tunnelInfo = null;
 
-        this.sshState = User.SSH_CLIENT_STATE.DISCONNECT;
-        this.sshClient = null;
+        // this.sshState = User.SSH_CLIENT_STATE.DISCONNECT;
+        // this.sshClient = null;
         this.remoteUser = null;
 
         /** 0 to disable forward */
@@ -218,69 +81,55 @@ class User extends EventEmitter {
         /** Path for folder to serve as static http site */
         this.staticDirectory = null;
 
-        this.sftpState = User.SFTP_CLIENT_STATE.DISCONNECT;
-        this.sftpClient = null;
+        // this.sftpState = User.SFTP_CLIENT_STATE.DISCONNECT;
+        // this.sftpClient = null;
 
         for (let key in data) {
             (this as any)[key] = (data as any)[key];
         }
     }
+    tunnelQueue = createTaskQueue(20 * 1000, (emitter) => {
+        // a promise that never resolve
+        return new Promise<[Connection, TcpipBindInfo]>(() => {})
+    })
+    clientQueue = createTaskQueue(25 * 1000, (emitter) => {
+        // a promise that never resolve
+        const tunnelPromise = this.tunnelQueue.request()
+        tunnelPromise.onDestroy(() => {
+            this.clientQueue.reset()
+        })
 
-    resetConnection() {
-        this.sshState = User.SSH_CLIENT_STATE.DISCONNECT;
+        const destroyPromise = new Promise<never>((_, reject) => tunnelPromise.onDestroy(() => { reject(new Error('tunnel destroyed')) }))
+        const clientPromise = (async () => {
+            const [tunnel, info] = await tunnelPromise
 
-        this.tunnelClient?.end()
-        this.tunnelClient = null
-        this.tunnelInfo = null
-
-        this.sftpState = User.SFTP_CLIENT_STATE.DISCONNECT;
-        this.sftpClient?.end()
-        this.sftpClient = null;
-    }
-    createClient() {
-        if (!this.tunnelClient || !this.tunnelInfo) {
-            console.warn(`${this.id}: [User] Failed to create client because the tunnel is disconnected.`);
-            this.once('tunnel_client', this.createClient.bind(this));
-            return;
-        }
-
-        let info = this.tunnelInfo;
-
-        if (this.sshState === User.SSH_CLIENT_STATE.WAIT) {
-            return;
-        }
-
-        if (this.sshState === User.SSH_CLIENT_STATE.CONNECT) {
-            this.emit('ssh_client', this.sshClient);
-            return;
-        }
-
-        console.log(`${this.id}: [User] Starting to create client...`);
-
-        this.sshState = User.SSH_CLIENT_STATE.WAIT;
-
-        this.tunnelClient.forwardOut(info.bindAddr, info.bindPort, '127.0.0.1', 9999, (err, channel) => {
-
-            if (err) {
-                console.error(inspect(err));
-                return;
-            }
+            const channel = await new Promise<ServerChannel>((resolve, reject) => {
+                tunnel.forwardOut(info.bindAddr, info.bindPort, '127.0.0.1', 9999, (err, channel1) => {
+                    if (err) {
+                        console.error(inspect(err));
+                        return reject(err)
+                    }
+                    resolve(channel1)
+                })
+            })
+            
 
             // FIXME: monkey patch!!!!
-            (channel.stderr as any).resume = function nuzz() { };
+            ;(channel.stderr as any).resume = function nuzz() { };
 
-            let client = new Client();
+            const client = new Client();
 
-            client.on('ready', () => {
-                if (this.sshClient) {
-                    this.sshClient.end();
-                }
+            tunnelPromise.onDestroy(() => {
+                client.destroy()
+                emitter.emit()
+            })
 
-                this.sshClient = client;
-                console.log(`${this.id}: [User] Client ready !!!`);
-                this.sshState = User.SSH_CLIENT_STATE.CONNECT;
-                this.emit('ssh_client', client);
-            });
+            const result = new Promise<Client>((resolve) => {
+                client.on('ready', () => {
+                    console.log(`${this.id}: [User] Client ready !!!`);
+                    resolve(client)
+                });
+            })
 
             client.connect({
                 sock: channel,
@@ -290,148 +139,87 @@ class User extends EventEmitter {
 
             client.on('error', function (err) {
                 console.error(inspect(err));
+                emitter.emit()
             });
 
             client.on('close', () => {
                 console.error('client error abort');
-                this.resetConnection()
+                emitter.emit()
             });
-        });
-    }
-    getClient(timeout = 20000 /* 20 seconds default*/) {
-        return new Promise<Client>((resolve, reject) => {
-            let id: ReturnType<typeof setTimeout> | null = null;
 
-            const handle = (client: Client | PromiseLike<Client>) => {
-                this.failedCreateClientCount = 0
-                if (id != null) {
-                    clearTimeout(id);
+            return result
+        })()
+
+        return Promise.race([destroyPromise, clientPromise])
+    })
+    sftpQueue = createTaskQueue(30 * 1000, async (emitter) => {
+        const clientPromise = this.clientQueue.request()
+
+        clientPromise.onDestroy(() => {
+            this.sftpQueue.reset()
+            emitter.emit()
+        })
+
+        const client = await clientPromise
+
+        const sftpStream = await new Promise<SFTPWrapper>((resolve, reject) => {
+            client.sftp((err?: Error, sftpStream?: SFTPWrapper) => {
+                if (err) {
+                    return reject(err)
                 }
-                resolve(client);
-            }
+                resolve(sftpStream!)
+            })
+        })
 
-            const onTimeout = () => {
-                this.removeListener('ssh_client', handle);
-                this.failedCreateClientCount++
-                if (this.failedCreateClientCount >= MAX_FAILED_CREATE_CLIENT) {
-                    console.error('[User] The tunnel is probably broken, dropping...')
-                    this.failedCreateClientCount = 0
-                    this.resetConnection()
-                }
-                reject(new Error('client connection timeout'));
-            }
+        clientPromise.onDestroy(() => {
+            sftpStream.destroy()
+        })
 
-            if (this.sshState !== User.SSH_CLIENT_STATE.CONNECT) {
-                id = setTimeout(onTimeout.bind(this), timeout);
-                this.createClient();
-                this.once('ssh_client', handle);
-            } else {
-                resolve(this.sshClient!);
-            }
+        
+        console.log(`${this.id}: [User] SFTP ready`);
 
-        });
-    }
-    createSftp() {
-        if (!this.sshClient) {
-            console.log(`${this.id}: [User] Wish to create sftp client, but the ssh connection is not yet ready`);
-            this.getClient()
-                .then(() => {
-                    console.log(`${this.id}: [User] SSH connection is ready, resume creating sftp client`);
-                    this.createSftp.call(this);
-                })
-                .catch((err) => {
-                    console.error(`${this.id}: [User] User wants to create SSH SFTP client, but it is not going to create due to ${inspect(err)}`);
-                });
-            return;
+        let cleanup = () => {
+            emitter.emit()
         }
 
-        if (this.sftpState === User.SFTP_CLIENT_STATE.WAIT) {
-            return;
+        sftpStream.once('end', cleanup);
+        sftpStream.once('close', cleanup);
+        sftpStream.once('error', cleanup);
+
+        return sftpStream
+    })
+
+    requestSuicideTimer () {
+        if (this.suicideRequestCount < MAX_SUICIDE_REQUEST) {
+            this.suicideRequestCount++
         }
-
-        if (this.sftpState === User.SFTP_CLIENT_STATE.CONNECT) {
-            this.emit('sftp_client', this.sftpClient);
-            return;
+        if (this.suicideRequestCount >= MAX_SUICIDE_REQUEST) {
+            if (this.suicideTimer == null) {
+                this.suicideTimer = setTimeout(() => {
+                    this.tunnelQueue.reset()
+                }, SUICIDE_DELAY)
+            }
         }
-
-        this.sftpState = User.SFTP_CLIENT_STATE.WAIT;
-
-        this.sshClient.sftp((err?: Error, sftpStream?: SFTPWrapper) => {
-            if (err || sftpStream == null) {
-                console.error(inspect(err));
-                this.sftpState = User.SFTP_CLIENT_STATE.DISCONNECT;
-                return;
-            }
-
-            this.sftpClient = sftpStream;
-            this.sftpState = User.SFTP_CLIENT_STATE.CONNECT;
-            this.emit('sftp_client', sftpStream);
-
-            console.log(`${this.id}: [User] SFTP ready`);
-
-            let cleanup = () => {
-                sftpStream.removeListener('end', cleanup);
-                sftpStream.removeListener('close', cleanup);
-                sftpStream.removeListener('error', cleanup);
-                this.sftpState = User.SFTP_CLIENT_STATE.DISCONNECT;
-                this.sftpClient = null;
-            }
-
-            sftpStream.once('end', cleanup);
-            sftpStream.once('close', cleanup);
-            sftpStream.once('error', cleanup);
-        });
     }
-    getSftp(timeout = 25000 /* 25 seconds default (because it needs to wait for client) */) {
-        return new Promise<SFTPWrapper>((resolve, reject) => {
-            let id: ReturnType<typeof setTimeout> | null = null;
+    clearSuicideTimer () {
+        this.suicideRequestCount = 0
+        if (this.suicideTimer != null) {
+            clearTimeout(this.suicideTimer)
+        }
+    }
 
-            const  handle = (client: SFTPWrapper) => {
-                if (id != null) {
-                    clearTimeout(id);
-                }
-                resolve(client);
-            }
-
-            const onTimeout = () => {
-                this.removeListener('sftp_client', handle);
-                reject(new Error('client connection timeout'));
-            }
-
-            if (this.sftpState !== User.SFTP_CLIENT_STATE.CONNECT) {
-                this.once('sftp_client', handle);
-                this.createSftp();
-            } else {
-                resolve(this.sftpClient!);
-            }
-
-            setTimeout(onTimeout.bind(this), timeout);
-        });
+    resetConnection() {
+        this.tunnelQueue.reset()
+    }
+    getClient() {
+        return this.clientQueue.request()
+    }
+    getSftp() {
+        return this.sftpQueue.request()
     }
     disconnectAll() {
-        if (this.sftpState === User.SFTP_CLIENT_STATE.CONNECT) {
-            this.sftpState = User.SFTP_CLIENT_STATE.DISCONNECT;
-            this.sftpClient && this.sftpClient.end();
-        }
-
-        if (this.sshState === User.SSH_CLIENT_STATE.CONNECT) {
-            this.sshState = User.SSH_CLIENT_STATE.DISCONNECT;
-            this.sshClient && this.sshClient.end();
-        }
+        this.tunnelQueue.reset()
     }
-
-    static SSH_CLIENT_STATE = {
-        DISCONNECT: 1,
-        WAIT: 2,
-        CONNECT: 3
-    }
-
-    static SFTP_CLIENT_STATE = {
-        DISCONNECT: 1,
-        WAIT: 2,
-        CONNECT: 3
-    }
-    
 }
 
 const userMap = new Map<string, Promise<User>>();
