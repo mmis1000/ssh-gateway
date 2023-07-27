@@ -276,6 +276,7 @@ Disallow: /
 
                             res.set('Content-Type', contentType);
                             res.set('Content-Length', String(size));
+                            res.set('Accept-Ranges', 'bytes');
 
                             if (range == null) {
                                 // readStream = sftpClient.createReadStream(fullPath);
