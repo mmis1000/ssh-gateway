@@ -216,7 +216,7 @@ Disallow: /
                         console.log(`${userData.id}: [HTTP] got stat of ${fullPath}`);
                         
                         if (err) {
-                            res.set('Content-Type', 'plain/text');
+                            res.set('Content-Type', 'text/plain');
                             return res.status(404).end(inspect(err));
                         }
 
