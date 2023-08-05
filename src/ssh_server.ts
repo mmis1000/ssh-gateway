@@ -11,6 +11,7 @@ import { User, getUserWithName } from "./user"
 import { AddressInfo } from "net";
 const utils = ssh2.utils;
 
+const HANDSHAKE_TIMEOUT = 60 * 1000
 
 export default function(config: Config) {
     const server = new ssh2.Server({
@@ -21,6 +22,12 @@ export default function(config: Config) {
         ]
     }, function(client: Connection & { userData?: User }) {
         console.log('A new ssh client connected!');
+
+        const timeoutKiller = setTimeout(() => {
+            console.error(`${client.userData?.id ?? '<unknown user>'}: [SSH] not finished handshake in time, considering bad`)
+            client.end()
+            // client.userData?.disconnectAll()
+        }, HANDSHAKE_TIMEOUT)
         
         client
         .on('error', function (err) {
@@ -123,6 +130,8 @@ To get new version of current script, fetch it from ${config.setupProtocol}://${
                 console.log(`${client.userData!.id}: [SSH] Client requested ${name} ${inspect(info)}`);
                 // reject();
                 if (name !== 'tcpip-forward' && name !== 'cancel-tcpip-forward') reject!();
+
+                clearTimeout(timeoutKiller)
 
                 if (name === 'tcpip-forward') {
                     console.log(`${client.userData!.id}: [SSH] Tunnel started!`);
