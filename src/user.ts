@@ -190,7 +190,7 @@ class User {
     })
 
     requestSuicideTimer () {
-        console.log(`${this.id} [User]: check alive ${this.suicideRequestCount}/${MAX_SUICIDE_REQUEST}`)
+        console.log(`${this.id}: [User] check alive ${this.suicideRequestCount}/${MAX_SUICIDE_REQUEST}`)
 
         if (this.suicideRequestCount < MAX_SUICIDE_REQUEST) {
             this.suicideRequestCount++
@@ -204,7 +204,7 @@ class User {
         }
     }
     clearSuicideTimer () {
-        console.log(`${this.id} [User]: clear alive ${this.suicideRequestCount}/${MAX_SUICIDE_REQUEST}`)
+        console.log(`${this.id}: [User] clear alive ${this.suicideRequestCount}/${MAX_SUICIDE_REQUEST}`)
 
         this.suicideRequestCount = 0
         if (this.suicideTimer != null) {
