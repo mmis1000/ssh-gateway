@@ -190,6 +190,8 @@ class User {
     })
 
     requestSuicideTimer () {
+        console.log(`${this.id} [User]: check alive ${this.suicideRequestCount}/${MAX_SUICIDE_REQUEST}`)
+
         if (this.suicideRequestCount < MAX_SUICIDE_REQUEST) {
             this.suicideRequestCount++
         }
@@ -202,6 +204,8 @@ class User {
         }
     }
     clearSuicideTimer () {
+        console.log(`${this.id} [User]: clear alive ${this.suicideRequestCount}/${MAX_SUICIDE_REQUEST}`)
+
         this.suicideRequestCount = 0
         if (this.suicideTimer != null) {
             clearTimeout(this.suicideTimer)
@@ -211,6 +215,8 @@ class User {
 
     resetConnection() {
         this.tunnelQueue.reset()
+        this.clientQueue.reset()
+        this.sftpQueue.reset()
     }
     getClient() {
         return this.clientQueue.request()
@@ -220,6 +226,8 @@ class User {
     }
     disconnectAll() {
         this.tunnelQueue.reset()
+        this.clientQueue.reset()
+        this.sftpQueue.reset()
     }
 }
 

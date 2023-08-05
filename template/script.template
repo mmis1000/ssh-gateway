@@ -165,35 +165,35 @@ fi
 
 
 $(which sshd) -D -f $WORKDIR/sshd_config -p $LISTEN_PORT -e >> "$WORKDIR/sshd.log" 2>> "$WORKDIR/sshd.err" &
-ssh -N            -i "$WORKDIR/id_rsa" -p $TARGET_PORT    -M -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no"                              $TARGET_USER@$TARGET_HOST& # spawn the master
+ssh -N            -i "$WORKDIR/id_rsa" -p $TARGET_PORT    -M -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no" -o "ServerAliveInterval 15"                             $TARGET_USER@$TARGET_HOST& # spawn the master
 sleep 5
 echo 'preparing to register client...'
-ssh               -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no"                              $TARGET_USER@$TARGET_HOST "register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")" # add forward 
+ssh               -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no" -o "ServerAliveInterval 15"                              $TARGET_USER@$TARGET_HOST "register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")" # add forward 
 sleep 1
 echo 'starting to forward connection'
-ssh -N -O forward -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no" -R 22:localhost:$LISTEN_PORT $TARGET_USER@$TARGET_HOST  # add forward 
+ssh -N -O forward -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no" -o "ServerAliveInterval 15" -R 22:localhost:$LISTEN_PORT $TARGET_USER@$TARGET_HOST  # add forward 
 
 # check ssh connectivity
 while true
 do
     echo 'starting to check alive'
-    ssh -O check -N -p $TARGET_PORT   -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" $TARGET_USER@$TARGET_HOST
+    ssh -O check -N -p $TARGET_PORT   -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" -o "ServerAliveInterval 15" $TARGET_USER@$TARGET_HOST
     LAST_STATUS=$?
     echo '---------------'
     echo $LAST_STATUS
     if [ $LAST_STATUS != 0 ]
     then
         echo 'connection dead... respawning'
-        ssh -N -O exit    -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                             $TARGET_USER@$TARGET_HOST  # add forward 
+        ssh -N -O exit    -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" -o "ServerAliveInterval 15"                             $TARGET_USER@$TARGET_HOST  # add forward 
         rm -f "$CONTROL_SOCK"
         
-        ssh -N            -i "$WORKDIR/id_rsa" -p $TARGET_PORT    -M -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no"                              $TARGET_USER@$TARGET_HOST& # spawn the master
+        ssh -N            -i "$WORKDIR/id_rsa" -p $TARGET_PORT    -M -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no" -o "ServerAliveInterval 15"                              $TARGET_USER@$TARGET_HOST& # spawn the master
         sleep 5
         echo 'preparing to register client...'
-        ssh               -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                              $TARGET_USER@$TARGET_HOST "register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")" # add forward 
+        ssh               -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" -o "ServerAliveInterval 15"                              $TARGET_USER@$TARGET_HOST "register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")" # add forward 
         sleep 1
         echo 'starting to forward connection'
-        ssh -N -O forward -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" -R 22:localhost:$LISTEN_PORT $TARGET_USER@$TARGET_HOST  # add forward 
+        ssh -N -O forward -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" -o "ServerAliveInterval 15" -R 22:localhost:$LISTEN_PORT $TARGET_USER@$TARGET_HOST  # add forward 
     fi
     
     sleep 10
