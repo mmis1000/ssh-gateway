@@ -34,8 +34,19 @@ export default function(config: Config) {
             if (client.userData) {
                 console.error(`${client.userData.id}: [SSH] ${inspect(err)}`);
                 client.userData.resetConnection()
+                client.userData = undefined
             } else {
                 console.error(`<unknown user>: ${inspect(err)}`);
+            }
+        })
+
+        client.on('close', function () {
+            if (client.userData) {
+                console.error(`${client.userData.id}: [SSH] closed`);
+                client.userData.resetConnection()
+                client.userData = undefined
+            } else {
+                console.error(`<unknown user>: closed}`);
             }
         })
         
@@ -137,7 +148,9 @@ To get new version of current script, fetch it from ${config.setupProtocol}://${
                     console.log(`${client.userData!.id}: [SSH] Tunnel started!`);
                     if (client.userData!.tunnelQueue.isRequesting()) {
                         console.log(`${client.userData!.id}: [SSH] Is requesting tunnel`);
-                        client.userData!.tunnelQueue.externalResolve([client, info])
+                        client.userData!.tunnelQueue.externalResolve([client, info], () => {
+                            client.end()
+                        })
                     } else {
                         console.log(`${client.userData!.id}: [SSH] Is not requesting tunnel`);
                         client.userData!.tunnelQueue.request().then((c) => {
@@ -145,7 +158,9 @@ To get new version of current script, fetch it from ${config.setupProtocol}://${
                             c[0].end()
                         }, () => {})
                         client.userData!.tunnelQueue.reset()
-                        client.userData!.tunnelQueue.externalResolve([client, info])
+                        client.userData!.tunnelQueue.externalResolve([client, info], () => {
+                            client.end()
+                        })
                     }
                 }
 

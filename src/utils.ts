@@ -190,7 +190,7 @@ export const createTaskQueue = <Result, Args extends any[] = []>(timeout: number
 
             return currentP
         },
-        externalResolve(res: Result) {
+        externalResolve(res: Result, onDestroy?: () => void) {
             if (resultPromise == null) {
                 // we may get the result even before asked, but just keep it anyway
                 const destroyEventEmitter = createDestroyEventEmitter()
@@ -202,6 +202,9 @@ export const createTaskQueue = <Result, Args extends any[] = []>(timeout: number
                     onDestroy: destroyEventEmitter.event,
                     destroy: () => destroyEventEmitter.emit()
                 })
+                if (onDestroy != null) {
+                    destroyEventEmitter.event(onDestroy)
+                }
                 return
             }
             resetTimeout()

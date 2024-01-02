@@ -358,7 +358,7 @@ Disallow: /
     router.use(function(req, res, next) {
         let domain = req.hostname;
 
-        if (domain !== config.httpHost) {
+        if (domain !== config.httpHost || (config.httpHost === config.setupHost && config.httpPort === config.setupPort)) {
             return next();
         }
 
@@ -380,7 +380,7 @@ To report abuse, go to ${config.setupProtocol}://${config.setupHost}:${config.se
             const isBasicAuth = authHeader && authHeader.startsWith('Basic')
             
             if (!isBasicAuth) {
-                res.setHeader('WWW-Authenticate', 'Basic realm="Not authencated"')
+                res.setHeader('WWW-Authenticate', 'Basic realm="Not authenticated"')
                 res.status(401)
                 res.end('')
                 return

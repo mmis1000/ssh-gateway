@@ -8,7 +8,7 @@ export interface Config {
     /** domain for retrieve config, update script */
     "setupHost": string,
     /** external domain port for retrieve config, update script */
-    "setupPort": string,
+    "setupPort": number,
     /** external ssh server hostname */
     "sshHost": string,
     /** external ssh server port */
