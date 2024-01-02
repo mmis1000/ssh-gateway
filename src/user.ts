@@ -135,6 +135,11 @@ class User {
                 sock: channel,
                 username: this.remoteUser!,
                 privateKey: this.publicKey!,
+                debug: console.log,
+            });
+
+            client.on('banner', function (msg) {
+                console.log(msg)
             });
 
             client.on('error', function (err) {

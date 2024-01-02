@@ -89,8 +89,20 @@ then
     exit -1
 fi
 
+SSHD_PATH="$(which sshd)"
 
-if [ ! "$(which sshd)" ]
+# prefer homebrew sshd on mac
+if [ $machine == "Mac" ]
+then
+    for i in /opt/homebrew/Cellar/openssh/*/sbin/sshd; do
+        if [ -f "$i" ]
+        then
+            SSHD_PATH="$i"
+        fi
+    done
+fi
+
+if [ ! "${SSHD_PATH}" ]
 then
     echo "Sorry, this script requires sshd in your environment, but I can't find it "
     exit -1
@@ -164,7 +176,7 @@ else
 fi
 
 
-$(which sshd) -D -f $WORKDIR/sshd_config -p $LISTEN_PORT -e >> "$WORKDIR/sshd.log" 2>> "$WORKDIR/sshd.err" &
+"${SSHD_PATH}" -D -f $WORKDIR/sshd_config -p $LISTEN_PORT -e >> "$WORKDIR/sshd.log" 2>> "$WORKDIR/sshd.err" &
 ssh -N            -i "$WORKDIR/id_rsa" -p $TARGET_PORT    -M -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no" -o "ServerAliveInterval 15"                             $TARGET_USER@$TARGET_HOST& # spawn the master
 sleep 5
 echo 'preparing to register client...'
