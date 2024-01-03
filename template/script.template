@@ -223,7 +223,7 @@ do
         fi
     fi
     
-    sleep 10
+    sleep 1
 done
 
 echo "exit child"

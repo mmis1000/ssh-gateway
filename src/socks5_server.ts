@@ -26,7 +26,7 @@ export default function(config: Config) {
         
         userInfo.getClient()
         .then(function(sshClient) {
-            sshClient.forwardOut('localhost', 9999, 'localhost', dstPort, function(err, dstStream) {
+            sshClient.forwardOut('localhost', ~~(Math.random() * 65535), 'localhost', dstPort, function(err, dstStream) {
                 if (err) {
                     console.log(err);
                     return stream.end();

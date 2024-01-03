@@ -177,7 +177,7 @@ class User {
         // a promise that never resolve
         const tunnelPromise = this.tunnelQueue.request()
         tunnelPromise.onDestroy(() => {
-            this.clientQueue.reset()
+            this.connectionAgentQueue.reset()
         })
 
         const destroyPromise = new Promise<never>((_, reject) => tunnelPromise.onDestroy(() => { reject(new Error('tunnel destroyed')) }))
@@ -213,7 +213,7 @@ class User {
 
                         const agent: ConnectionAgent = {
                             createConnection: (cb) => {
-                                client.forwardOut('localhost', 9999, 'localhost', this.httpPort!, cb)
+                                client.forwardOut('localhost',  ~~(Math.random() * 65535), 'localhost', this.httpPort!, cb)
                             },
                         }
 
@@ -246,7 +246,7 @@ class User {
             } else if (protocol === Protocol.V1) {
                 const agent: ConnectionAgent = {
                     createConnection: (cb) => {
-                        tunnel.forwardOut(info.bindAddr, info.bindPort, '127.0.0.1', 9999, cb)
+                        tunnel.forwardOut(info.bindAddr, info.bindPort, '127.0.0.1',  ~~(Math.random() * 65535), cb)
                     },
                 }
 
@@ -337,6 +337,7 @@ class User {
     }
     disconnectAll() {
         this.tunnelQueue.reset()
+        this.connectionAgentQueue.reset()
         this.clientQueue.reset()
         this.sftpQueue.reset()
     }
