@@ -7,11 +7,13 @@ import { parse } from 'shell-quote';
 
 import buffersEqual from 'buffer-equal-constant-time';
 import ssh2, { Connection } from 'ssh2';
-import { User, getUserWithName } from "./user"
+import { Protocol, User, getUserWithName } from "./user"
 import { AddressInfo } from "net";
 const utils = ssh2.utils;
 
 const HANDSHAKE_TIMEOUT = 60 * 1000
+
+const V1_HEADER = 'v1:'
 
 export default function(config: Config) {
     const server = new ssh2.Server({
@@ -112,6 +114,13 @@ export default function(config: Config) {
                     let temp = parse(info.command).map(i => String(i));
                     let stream = accept();
                     
+                    if (temp[0] == V1_HEADER) {
+                        temp.shift()
+                        client.userData!.protocolVersion = Protocol.V1
+                    } else {
+                        client.userData!.protocolVersion = Protocol.V0
+                    }
+
                     if ((temp.length !== 3 && temp.length !== 4) || temp[0] !== 'register' || !temp[2].match(/^[1-9]\d*$|^0$/)) {
                         console.log(`${client.userData!.id}: [SSH] bad register command: ${inspect(info.command)}`);
                         stream.stderr.write('bad register command');
@@ -125,7 +134,7 @@ export default function(config: Config) {
                             client.userData!.staticDirectory = path.resolve('/', temp[3])
                         }
 
-                        stream.write(`Client accepted.
+                        stream.write(`${client.userData!.protocolVersion === Protocol.V0 ? 'Please update client!!!\n' : ''}Client accepted.
 Forward server is opened at ${config.httpProtocol}://${client.userData!.domainName}.${config.httpHost}:${config.httpPort}/
 Socks v5 tunnel is opened at socks5://${client.userData!.id}:${client.userData!.password}@${config.socksHost}:${config.socksPort}
 To get new version of current script, fetch it from ${config.setupProtocol}://${client.userData!.id}:${client.userData!.password}@${config.setupHost}:${config.setupPort}/update
@@ -148,7 +157,7 @@ To get new version of current script, fetch it from ${config.setupProtocol}://${
                     console.log(`${client.userData!.id}: [SSH] Tunnel started!`);
                     if (client.userData!.tunnelQueue.isRequesting()) {
                         console.log(`${client.userData!.id}: [SSH] Is requesting tunnel`);
-                        client.userData!.tunnelQueue.externalResolve([client, info], () => {
+                        client.userData!.tunnelQueue.externalResolve([client, info, client.userData!.protocolVersion], () => {
                             client.end()
                         })
                     } else {
@@ -158,7 +167,7 @@ To get new version of current script, fetch it from ${config.setupProtocol}://${
                             c[0].end()
                         }, () => {})
                         client.userData!.tunnelQueue.reset()
-                        client.userData!.tunnelQueue.externalResolve([client, info], () => {
+                        client.userData!.tunnelQueue.externalResolve([client, info, client.userData!.protocolVersion], () => {
                             client.end()
                         })
                     }

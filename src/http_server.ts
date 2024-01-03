@@ -53,14 +53,14 @@ export default function(config: Config) {
         })
         .then(async function (userData) {
             if (userData.httpPort !== 0) {
-                const sshClient = await userData.getClient();
-                return [userData, sshClient] as const;
+                const agent = await userData.getConnectionAgent();
+                return [userData, agent] as const;
             } else {
                 throw Error('not in forward mode')
             }
         })
-        .then(function ([userData, sshClient]) {
-            if (sshClient) {
+        .then(function ([userData, agent]) {
+            if (agent) {
                 proxy.ws(req, socket, head, {
                     target: {
                         host: 'localhost',
@@ -68,7 +68,7 @@ export default function(config: Config) {
                     },
                     agent: Object.assign(Object.create(http.Agent), {
                         createConnection: function (_opts: any, cb: (err?: Error, stream?: Duplex) => void) {
-                            sshClient.forwardOut('localhost', 9999, 'localhost', userData.httpPort!, function(err, stream) {
+                            agent.createConnection(function(err, stream) {
                                 if (err) {
                                     return cb(err);
                                 }
@@ -128,11 +128,11 @@ Disallow: /
                 throw new Error('aborted')
             }
             if (userData.httpPort !== 0) {
-                userData.getClient()
-                .then(function(sshClient) {
+                userData.getConnectionAgent()
+                .then(function(agent) {
                     let client = http.request({
                         createConnection: function(opts, cb) {
-                            sshClient.forwardOut('localhost', 9999, 'localhost', userData.httpPort!, function(err, stream) {
+                            agent.createConnection(function(err, stream) {
                                 if (err) {
                                     userData.requestSuicideTimer()
                                     return cb(err, null as never);
@@ -432,7 +432,7 @@ To report abuse, go to ${config.setupProtocol}://${config.setupHost}:${config.se
         const isBasicAuth = authHeader && authHeader.startsWith('Basic')
 
         if (!isBasicAuth) {
-            res.setHeader('WWW-Authenticate', 'Basic realm="Not authencated"')
+            res.setHeader('WWW-Authenticate', 'Basic realm="Not authenticated"')
             res.status(401)
             res.end('')
         }

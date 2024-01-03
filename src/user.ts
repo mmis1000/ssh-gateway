@@ -7,6 +7,7 @@ const getRandomDomain = require("human-readable-ids").hri.random.bind(require("h
 import { ChildProcess, execFile as exec } from 'child_process'
 import { Connection, TcpipBindInfo } from "ssh2";
 import { createTaskQueue } from './utils';
+import { Duplex } from 'stream';
 
 // const saveDir = path.resolve(__dirname, '../', config.saveDir);
 
@@ -34,6 +35,15 @@ interface UserData {
     privateKey_pub: string
 }
 
+export enum Protocol {
+    V0 = 0,
+    V1 = 1
+}
+
+
+export interface ConnectionAgent {
+    createConnection(cb: (err?: Error, stream?: Duplex) => void): void
+}
 
 class User {
     id: string | null
@@ -46,6 +56,8 @@ class User {
     // sshState: number
     remoteUser: string | null
     httpPort: number | null
+    protocolVersion: Protocol.V0 | Protocol.V1 = Protocol.V0
+
     // sftpState: number
     staticDirectory: string | null
     // tunnelClient: Connection | null
@@ -53,6 +65,8 @@ class User {
     // sshClient: Client | null
     // sftpClient: SFTPWrapper | null
     suicideRequestCount = 0
+
+
     suicideTimer: null | ReturnType<typeof setTimeout> = null
 
     saveDir: string
@@ -90,8 +104,9 @@ class User {
     }
     tunnelQueue = createTaskQueue(20 * 1000, (emitter) => {
         // a promise that never resolve
-        return new Promise<[Connection, TcpipBindInfo]>(() => {})
+        return new Promise<[Connection, TcpipBindInfo, Protocol]>(() => {})
     })
+
     clientQueue = createTaskQueue(25 * 1000, (emitter) => {
         // a promise that never resolve
         const tunnelPromise = this.tunnelQueue.request()
@@ -157,6 +172,94 @@ class User {
 
         return Promise.race([destroyPromise, clientPromise])
     })
+
+    connectionAgentQueue = createTaskQueue(30 * 1000, (emitter) => {
+        // a promise that never resolve
+        const tunnelPromise = this.tunnelQueue.request()
+        tunnelPromise.onDestroy(() => {
+            this.clientQueue.reset()
+        })
+
+        const destroyPromise = new Promise<never>((_, reject) => tunnelPromise.onDestroy(() => { reject(new Error('tunnel destroyed')) }))
+
+
+        const agentPromise = (async () => {
+            const [tunnel, info, protocol] = await tunnelPromise
+
+            if (protocol === Protocol.V0) {
+                const channel = await new Promise<ServerChannel>((resolve, reject) => {
+                    tunnel.forwardOut(info.bindAddr, info.bindPort, '127.0.0.1', 9999, (err, channel1) => {
+                        if (err) {
+                            console.error(inspect(err));
+                            return reject(err)
+                        }
+                        resolve(channel1)
+                    })
+                })
+
+                // FIXME: monkey patch!!!!
+                ;(channel.stderr as any).resume = function nuzz() { };
+
+                const client = new Client();
+
+                tunnelPromise.onDestroy(() => {
+                    client.destroy()
+                    emitter.emit()
+                })
+
+                const result = new Promise<ConnectionAgent>((resolve) => {
+                    client.on('ready', () => {
+                        console.log(`${this.id}: [User] Client ready !!!`);
+
+                        const agent: ConnectionAgent = {
+                            createConnection: (cb) => {
+                                client.forwardOut('localhost', 9999, 'localhost', this.httpPort!, cb)
+                            },
+                        }
+
+                        resolve(agent)
+                    });
+                })
+
+                client.connect({
+                    sock: channel,
+                    username: this.remoteUser!,
+                    privateKey: this.publicKey!,
+                    debug: console.log,
+                });
+
+                client.on('banner', function (msg) {
+                    console.log(msg)
+                });
+
+                client.on('error', function (err) {
+                    console.error(inspect(err));
+                    emitter.emit()
+                });
+
+                client.on('close', () => {
+                    console.error('client error abort');
+                    emitter.emit()
+                });
+
+                return result
+            } else if (protocol === Protocol.V1) {
+                const agent: ConnectionAgent = {
+                    createConnection: (cb) => {
+                        tunnel.forwardOut(info.bindAddr, info.bindPort, '127.0.0.1', 9999, cb)
+                    },
+                }
+
+                return agent
+            } else {
+                throw new Error('unknown protocol?')
+            }
+
+        })()
+
+        return Promise.race([destroyPromise, agentPromise])
+    })
+
     sftpQueue = createTaskQueue(30 * 1000, async (emitter) => {
         const clientPromise = this.clientQueue.request()
 
@@ -225,6 +328,9 @@ class User {
     }
     getClient() {
         return this.clientQueue.request()
+    }
+    getConnectionAgent() {
+        return this.connectionAgentQueue.request()
     }
     getSftp() {
         return this.sftpQueue.request()
