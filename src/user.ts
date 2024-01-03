@@ -108,7 +108,6 @@ class User {
     })
 
     clientQueue = createTaskQueue(25 * 1000, (emitter) => {
-        // a promise that never resolve
         const tunnelPromise = this.tunnelQueue.request()
         tunnelPromise.onDestroy(() => {
             this.clientQueue.reset()
@@ -174,7 +173,6 @@ class User {
     })
 
     connectionAgentQueue = createTaskQueue(30 * 1000, (emitter) => {
-        // a promise that never resolve
         const tunnelPromise = this.tunnelQueue.request()
         tunnelPromise.onDestroy(() => {
             this.connectionAgentQueue.reset()
