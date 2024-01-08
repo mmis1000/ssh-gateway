@@ -1,3 +1,5 @@
+import { RawData } from "ws"
+
 type CancelCallback = () => void
 type HandlerCallback<T> = (value: T) => void
 type SubscribeHandlerCallback<T> = (fn: HandlerCallback<T>, hasEmitted: boolean, lastValue: T | null, unsubscribe: () => void) => void
@@ -250,4 +252,22 @@ export function encodePath(str: string) {
 }
 export function decodePath(str: string) {
     return str.split('/').map((p) => decodeURIComponent(p)).join('/')
+}
+
+const decoder = new TextDecoder()
+
+export function parseRawData(msg: RawData) {
+    let text: string
+    if (Array.isArray(msg)) {
+        const res = Buffer.concat(msg)
+        text = res.toString('utf8')
+    } else if (msg instanceof Buffer) {
+        text = msg.toString('utf8')
+    } else if (msg instanceof ArrayBuffer) {
+        text = decoder.decode(msg)
+    } else {
+        throw new Error('unknown content ', msg)
+    }
+
+    return JSON.parse(text)
 }

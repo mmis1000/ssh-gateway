@@ -4,7 +4,10 @@
   "description": "a proxy to create reverse tunnel, port forward, authication and domain in one command",
   "main": "index.js",
   "scripts": {
+    "start": "node index.js",
+    "dev": "NODE_ENV=development node index.js",
     "build": "tsc",
+    "watch": "tsc --watch",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "author": "mmis10002@gmail.com",
@@ -22,7 +25,8 @@
     "shell-quote": "^1.8.1",
     "socksv5": "0.0.6",
     "ssh2": "^1.14.0",
-    "ssh2-streams": "^0.4.10"
+    "ssh2-streams": "^0.4.10",
+    "ws": "^8.16.0"
   },
   "repository": {
     "type": "git",
@@ -42,6 +46,7 @@
     "@types/shell-quote": "^1.7.1",
     "@types/ssh2": "^1.11.13",
     "@types/ssh2-streams": "^0.1.9",
+    "@types/ws": "^8.5.10",
     "typescript": "^5.1.6"
   }
 }

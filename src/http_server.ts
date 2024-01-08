@@ -1,4 +1,4 @@
-import { Config } from "./interface";
+import { Config, Packet } from "./interface";
 
 /** @undindent-chained-methods */
 import http from "http";
@@ -11,16 +11,66 @@ import mime from "mime";
 import { createUser, getUserWithName, getUserWithDomain } from"./user";
 import ssh2_streams from 'ssh2-streams';
 const SFTPStream = ssh2_streams.SFTPStream;
-import { decodePath, encodePath } from "./utils";
+import { decodePath, encodePath, parseRawData } from "./utils";
 import getFastReadStream from "./ssh_fast_read_stream";
 import httpProxy from 'http-proxy';
+import { RawData, WebSocketServer } from 'ws';
 import { AddressInfo } from "net";
 import { Duplex, pipeline } from "stream";
+import { WsManager } from "./ws_manager";
 
-export default function(config: Config) {
+const idMap: Record<string, number> = {}
+const getId = (name: string) => {
+    const current = idMap[name] ?? 0
+    idMap[name] = current
+    idMap[name]++
+    return current
+}
+
+export default async function(config: Config) {
+
     const router = express();
     const server = http.createServer(router);
+    const wsServer = new WebSocketServer({ noServer: true,  });
 
+    wsServer.on('connection', function connection(ws) {
+        const tempErrorHandler = () => {
+            try {
+                ws.close()
+            } catch (err) {}
+        }
+        const tempHandler = async (msg: RawData, isBinary: boolean) => {
+            console.log(msg, isBinary)
+            if (isBinary) return
+
+            try {
+                const parsed = parseRawData(msg)
+                const username: string = String(parsed[0]) ?? ''
+                const password: string = String(parsed[1]) ?? ''
+                const user = await getUserWithName(config.saveDir, username)
+                if (password === user.password) {
+                    console.log(`${username}: [HTTP] ws authenticated`)
+                    wsManager.addManagedSocket(username, ws)
+                    ws.off('message', tempHandler)
+                    ws.off('error', tempErrorHandler)
+
+                    const msg: Packet = {
+                        type: 'authenticated',
+                        id: getId(username)
+                    }
+                    ws.send(JSON.stringify(msg))
+                }
+            } catch (err) {
+                console.log(`[HTTP] failed auth ws attempt`)
+                ws.close(1001, 'bad username or password')
+            }
+        }
+        ws.on('message', tempHandler)
+        ws.on('error', tempErrorHandler)
+        // ...
+    });
+
+    const wsManager = new WsManager<Packet>()
     var proxy = httpProxy.createProxyServer({
         target: {
             host: 'localhost',
@@ -35,6 +85,17 @@ export default function(config: Config) {
         if (!domain) {
             return
         }
+
+        if (domain === config.setupHost && req.url?.startsWith('/__observe_requests')) {
+            console.log(`[HTTP] incoming ws attempt`)
+            wsServer.handleUpgrade(req, socket, head, function done(ws) {
+                console.log(`[HTTP] emit ws connection`)
+                wsServer.emit('connection', ws, req);
+            });
+            // do not proxy it
+            return;
+        }
+
 
         if (!domain.endsWith(config.httpHost) || domain === config.httpHost) {
             // do not proxy it
@@ -110,7 +171,7 @@ Disallow: /
             return
         }
 
-        let id = domain.split('.')[0];
+        let subdomain = domain.split('.')[0];
 
         let aborted = false
         req.on('error', () => {
@@ -120,11 +181,22 @@ Disallow: /
             } catch (err) {}
         })
 
-        getUserWithDomain(config.saveDir, id)
+        getUserWithDomain(config.saveDir, subdomain)
         .then(function(userData) {
             if (aborted) {
                 throw new Error('aborted')
             }
+
+            const requestId = getId(subdomain)
+
+            wsManager.broadcast(userData.id! ,{
+                type: 'request-header',
+                id: requestId,
+                method: req.method,
+                path: req.url,
+                headers: req.headers
+            })
+
             if (userData.httpPort !== 0) {
                 userData.getConnectionAgent()
                 .then(function(agent) {
@@ -174,6 +246,14 @@ Disallow: /
                             "X-Proxy-User": userData.id
                         }))
 
+                        wsManager.broadcast(userData.id! ,{
+                            type: 'response-header',
+                            id: requestId,
+                            method: req.method,
+                            path: req.url,
+                            headers: msg.headers
+                        })
+            
                         pipeline(
                             msg,
                             res,
@@ -487,6 +567,17 @@ $ chmod 755 run.sh
 $ ./run.sh
 `)
     })
+
+    if (process.env.NODE_ENV !== 'development') {
+        router.use('/app', express.static('app/dist'))
+
+        router.use('/app', (req, res, next) => {
+            res.sendFile('app/dist/index.html', { root: path.resolve(__dirname, '../') })
+        })
+    } else {
+        const viteServerMiddleware = await (await import("./vite_dev_server.mjs")).createServer(server)
+        router.use(viteServerMiddleware.middlewares)
+    }
 
     server.listen(config.httpListen || 8080, "0.0.0.0", function() {
         let addr = server.address() as AddressInfo;

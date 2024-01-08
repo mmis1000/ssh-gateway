@@ -42,3 +42,38 @@ export interface Config {
     "setupPassword": string,
 
 }
+
+export interface AbstractPacket {
+    type: string,
+    id: number
+}
+
+export interface PacketPing extends AbstractPacket {
+    type: 'ping'
+}
+
+
+interface PacketAuthenticated extends AbstractPacket {
+    type: 'authenticated'
+}
+
+
+interface PacketRequestHeader extends AbstractPacket {
+    type: 'request-header',
+    method: string,
+    path: string,
+    headers: Record<string, string | string[] | undefined>
+}
+
+interface PacketResponseHeader extends AbstractPacket {
+    type: 'response-header',
+    method: string,
+    path: string,
+    headers: Record<string, string | string[] | undefined>
+}
+
+export type Packet =
+    | PacketPing
+    | PacketAuthenticated
+    | PacketRequestHeader
+    | PacketResponseHeader
