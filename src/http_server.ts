@@ -13,7 +13,7 @@ import parseRange from 'range-parser';
 import ejs from "ejs";
 import ssh2_streams from 'ssh2-streams';
 const SFTPStream = ssh2_streams.SFTPStream;
-import { decodePath, encodePath } from "./path_utils";
+import { decodePath, encodePath } from "./utils";
 import getFastReadStream from "./ssh_fast_read_stream";
 import httpProxy from 'http-proxy';
 import { AddressInfo } from "net";
