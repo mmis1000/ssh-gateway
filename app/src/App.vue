@@ -25,6 +25,7 @@ const onConnect = () => {
         id: parsed.id,
         method: parsed.method,
         path: parsed.path,
+        code: -1,
         req: parsed.headers,
         res: {}
       })
@@ -32,6 +33,7 @@ const onConnect = () => {
     if (parsed.type === 'response-header') {
       const target = packets.value.find(i => i.id === parsed.id)
       if (target) {
+        target.code = parsed.code
         target.res = parsed.headers
       }
     }
@@ -39,6 +41,7 @@ const onConnect = () => {
   ws.addEventListener('close', () => {
     opened.value = false
     if (hasConnected.value) {
+      console.log('trying to reconnect')
       onConnect()
     }
   })
@@ -47,6 +50,7 @@ const packets = ref<{
   id: number,
   method: string,
   path: string,
+  code: number,
   req: Record<string, string | string[] | undefined>,
   res: Record<string, string | string[] | undefined>,
 }[]>([])
@@ -63,6 +67,7 @@ const packets = ref<{
       #{{ packet.id }} <br>
       method: {{ packet.method }} <br>
       url: {{ packet.path }} <br>
+      code: {{ packet.code }} <br>
       req: <pre>{{ JSON.stringify(packet.req, undefined, 4) }}</pre>
       res: <pre>{{ JSON.stringify(packet.res, undefined, 4) }}</pre>
     </div>

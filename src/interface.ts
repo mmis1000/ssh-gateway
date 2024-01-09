@@ -69,6 +69,7 @@ interface PacketResponseHeader extends AbstractPacket {
     type: 'response-header',
     method: string,
     path: string,
+    code: number,
     headers: Record<string, string | string[] | undefined>
 }
 

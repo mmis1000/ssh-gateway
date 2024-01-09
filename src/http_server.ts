@@ -30,6 +30,8 @@ const getId = (name: string) => {
 export default async function(config: Config) {
 
     const router = express();
+    router.disable('x-powered-by');
+
     const server = http.createServer(router);
     const wsServer = new WebSocketServer({ noServer: true,  });
 
@@ -59,6 +61,9 @@ export default async function(config: Config) {
                         id: getId(username)
                     }
                     ws.send(JSON.stringify(msg))
+                } else {
+                    console.log(`[HTTP] failed auth ws attempt`)
+                    ws.close(1001, 'bad username or password')
                 }
             } catch (err) {
                 console.log(`[HTTP] failed auth ws attempt`)
@@ -250,6 +255,7 @@ Disallow: /
                             type: 'response-header',
                             id: requestId,
                             method: req.method,
+                            code: msg.statusCode!,
                             path: req.url,
                             headers: msg.headers
                         })
