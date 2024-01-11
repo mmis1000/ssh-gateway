@@ -3,3 +3,4 @@ node_modules/
 ssh_host_*
 dist/
 config.json
+tsconfig.tsbuildinfo
