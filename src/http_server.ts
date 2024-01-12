@@ -1,6 +1,5 @@
 import { Config, Packet } from "./interface";
 
-/** @undindent-chained-methods */
 import http from "http";
 import express from "express";
 const inspect = require('util').inspect;
@@ -589,5 +588,6 @@ $ ./run.sh
         let addr = server.address() as AddressInfo;
         console.log("Http server listening at", addr.address + ":" + addr.port);
         console.log("Http server exposed at", `${config.httpProtocol}://${config.httpHost}:${config.httpPort}/`);
+        console.log('To setup a new client use', `curl -X POST${config.setupRequireAuth ? ` -u '${config.setupAccount}:${config.setupPassword.replace("'", `'"'"'`)}'`: ''} ${config.setupProtocol}://${config.setupHost}:${config.setupPort}/setup`)
     });
 }

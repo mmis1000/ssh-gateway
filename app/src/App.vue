@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import {ref} from 'vue'
+import { DataRow } from './interface';
+import InfoRow from './components/InfoRow.vue';
 const username =ref('')
 const password = ref('')
 const opened = ref(false)
@@ -46,14 +48,7 @@ const onConnect = () => {
     }
   })
 }
-const packets = ref<{
-  id: number,
-  method: string,
-  path: string,
-  code: number,
-  req: Record<string, string | string[] | undefined>,
-  res: Record<string, string | string[] | undefined>,
-}[]>([])
+const packets = ref<DataRow[]>([])
 </script>
 
 <template>
@@ -63,14 +58,7 @@ const packets = ref<{
     <button @click="onConnect">Connect</button>
   </div>
   <div v-else>
-    <div v-for="packet of packets" :key="packet.id">
-      #{{ packet.id }} <br>
-      method: {{ packet.method }} <br>
-      url: {{ packet.path }} <br>
-      code: {{ packet.code }} <br>
-      req: <pre>{{ JSON.stringify(packet.req, undefined, 4) }}</pre>
-      res: <pre>{{ JSON.stringify(packet.res, undefined, 4) }}</pre>
-    </div>
+    <InfoRow v-for="packet of packets" :key="packet.id" :data="packet" />
   </div>
 </template>
 
