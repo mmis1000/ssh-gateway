@@ -49,9 +49,11 @@ printf '%s\n' "$KNOWN_HOSTS" > "$WORKDIR/known_hosts"
 # -a -x       never forward the ssh agent or X11 to the gateway, whatever ~/.ssh/config says
 # IdentitiesOnly  offer only the key made for this script, not every key in the agent
 # known_hosts     only talk to the gateway whose host keys came with this script
+# ControlPersist 60  if this script and its watchdog are both killed, the tunnel still closes a
+#                    minute after the last connection through it ended
 SSH_OPTS=(
     -i "$WORKDIR/id_rsa" -p "$TARGET_PORT"
-    -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"
+    -S "$CONTROL_SOCK" -o "ControlPersist 60" -o "ControlMaster auto"
     -a -x -o "IdentitiesOnly yes"
     -o "UserKnownHostsFile \"$WORKDIR/known_hosts\"" -o "StrictHostKeyChecking yes"
     -o "ServerAliveInterval 15"
@@ -72,7 +74,7 @@ AllowUsers $CURRENT_USER
 
 PermitRootLogin no
 AuthorizedKeysFile     $WORKDIR/authorized_keys
-PidFile                $WORKDIR/sshd.pid
+PidFile                $WORKDIR/sshd.daemon.pid
 PasswordAuthentication no
 ChallengeResponseAuthentication no
 UsePAM no
@@ -119,23 +121,61 @@ then
     exit -1
 fi
 
-function finish_no_exit {
+export SSHD_PID_FILE="$WORKDIR/sshd.pid"
+
+# stop the sshd of this script, checking the pid still belongs to it
+function stop_sshd {
+  if [ -f "$SSHD_PID_FILE" ]
+  then
+    local pid="$(cat "$SSHD_PID_FILE")"
+    if [ -n "$pid" ] && ps -p "$pid" -o args= 2>/dev/null | grep -qF "$WORKDIR/sshd_config"
+    then
+      kill "$pid" >/dev/null 2>&1
+    fi
+    rm -f "$SSHD_PID_FILE"
+  fi
+}
+
+# close the tunnel and stop the local sshd, also left overs of a run that was killed with -9
+function stop_tunnel {
   ssh -N -O exit "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST >/dev/null 2>&1
   rm -f "$CONTROL_SOCK" >/dev/null 2>&1
+  stop_sshd
 }
 
 function finish {
-  ssh -N -O exit "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST >/dev/null 2>&1
-  rm -f "$CONTROL_SOCK" >/dev/null 2>&1
-  echo Exited!;
-  kill 0
-  exit;
+  trap - INT TERM HUP QUIT
+  stop_tunnel
+  # only processes started by this script, never the whole process group,
+  # which includes the parent when run.sh is started from another script
+  local jobs="$(jobs -p)"
+  [ -n "$jobs" ] && kill $jobs >/dev/null 2>&1
+  echo Exited!
+  exit
 }
 
-finish_no_exit
+stop_tunnel
 
-trap "exit" INT TERM
+# ctrl+c, ctrl+\, closing the terminal and kill all end up in finish
+trap "exit" INT TERM HUP QUIT
 trap finish EXIT
+
+# a script killed with -9 can not run its traps, a watchdog cleans up for it then
+function script_alive {
+  # a killed script stays a zombie until its parent reaps it, kill -0 still succeeds on those
+  kill -0 $$ >/dev/null 2>&1 && ! ps -o stat= -p $$ 2>/dev/null | grep -q Z
+}
+function watch_script {
+  # the terminal may close together with the script, the hangup must not stop the watchdog,
+  # on a plain hangup the script cleans up itself and stops the watchdog
+  trap '' HUP
+  while script_alive
+  do
+    sleep 2
+  done
+  stop_tunnel
+}
+watch_script &
 
 
 echo "===EULA=== 
@@ -190,12 +230,13 @@ fi
 if [ "$FORWARD_PORT" == 0 ]
 then
     "${SSHD_PATH}" -D -f $WORKDIR/sshd_config -p $LISTEN_PORT -e >> "$WORKDIR/sshd.log" 2>> "$WORKDIR/sshd.err" &
+    echo $! > "$SSHD_PID_FILE"
 fi
 
 ssh -N -M "${SSH_OPTS[@]}" -o "ClearAllForwardings yes" $TARGET_USER@$TARGET_HOST & # spawn the master
 sleep 5
 echo 'preparing to register client...'
-ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v2: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
+ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v3: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
 sleep 1
 echo 'starting to forward connection'
 
@@ -223,7 +264,7 @@ do
         ssh -N -M "${SSH_OPTS[@]}" -o "ClearAllForwardings yes" $TARGET_USER@$TARGET_HOST & # spawn the master
         sleep 5
         echo 'preparing to register client...'
-        ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v2: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
+        ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v3: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
         sleep 1
         echo 'starting to forward connection'
         if [ "$FORWARD_PORT" == 0 ]

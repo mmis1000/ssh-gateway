@@ -8,6 +8,7 @@ import { promises as fs } from "fs";
 import path from "path";
 import mime from "mime";
 import { UserStore } from "./store";
+import { User } from "./user";
 import ssh2_streams from 'ssh2-streams';
 const SFTPStream = ssh2_streams.SFTPStream;
 import { asSocket, decodePath, encodePath, formatOrigin, getContentType, parseRawData } from "./utils";
@@ -29,6 +30,20 @@ const getId = (name: string) => {
     idMap[name] = current
     idMap[name]++
     return current
+}
+
+/** run.sh for a user, from template/script.template */
+export function renderClientScript(template: string, config: Pick<Config, 'sshHost' | 'sshPort' | 'userListenPortLow' | 'userListenPortHigh'>, user: User, knownHosts: string) {
+    return render(template, {
+        TARGET_PORT: config.sshPort,
+        TARGET_USER: user.id!,
+        TARGET_HOST: config.sshHost,
+        CLIENT_PRIVATE_KEY: user.clientKey!,
+        CLIENT_SERVER_KEY: user.gatewayKeyPub!,
+        LISTEN_PORT_LOW: config.userListenPortLow,
+        LISTEN_PORT_HIGH: config.userListenPortHigh,
+        KNOWN_HOSTS: knownHosts,
+    })
 }
 
 export async function createHttpServer(config: Config, store: UserStore) {
@@ -527,16 +542,7 @@ Disallow: /
             .then(function([userData, template, knownHosts]) {
                 res.set('Content-Type', 'application/x-sh');
 
-                res.end(render(template, {
-                    TARGET_PORT: config.sshPort,
-                    TARGET_USER: userData.id!,
-                    TARGET_HOST: config.sshHost,
-                    CLIENT_PRIVATE_KEY: userData.clientKey!,
-                    CLIENT_SERVER_KEY: userData.gatewayKeyPub!,
-                    LISTEN_PORT_LOW: config.userListenPortLow,
-                    LISTEN_PORT_HIGH: config.userListenPortHigh,
-                    KNOWN_HOSTS: knownHosts,
-                }))
+                res.end(renderClientScript(template, config, userData, knownHosts))
             })
             .catch(function(err) {
                 res.status(500).end(err.stack)
@@ -579,16 +585,7 @@ Disallow: /
         .then(function([userData, template, knownHosts]) {
             res.set('Content-Type', 'application/x-sh');
 
-            res.end(render(template, {
-                TARGET_PORT: config.sshPort,
-                TARGET_USER: userData.id!,
-                TARGET_HOST: config.sshHost,
-                CLIENT_PRIVATE_KEY: userData.clientKey!,
-                CLIENT_SERVER_KEY: userData.gatewayKeyPub!,
-                LISTEN_PORT_LOW: config.userListenPortLow,
-                LISTEN_PORT_HIGH: config.userListenPortHigh,
-                KNOWN_HOSTS: knownHosts,
-            }))
+            res.end(renderClientScript(template, config, userData, knownHosts))
         })
         .catch((err) => {
             console.log(`${account}: [HTTP] denied update of ${str} due to ${err}`);

@@ -43,8 +43,10 @@ function killConnection(client: Connection) {
  * 1: protocol v1, the gateway connects through the reverse forward directly
  * 2: hardened client sshd (sftp read only, local ports only), pinned host keys,
  *    no agent or X11 forwarding, only the issued key is offered
+ * 3: cleans up on ctrl+\ and on hangup, never kills its parent, a watchdog cleans up
+ *    after kill -9, and the next start removes what a killed run left
  */
-export const CLIENT_SCRIPT_VERSION = 2
+export const CLIENT_SCRIPT_VERSION = 3
 const VERSION_HEADER = /^v(\d+):$/
 
 export function createSshServer(config: Config, store: UserStore, hostKeys: Buffer[], options: SshServerOptions = {}) {
@@ -171,7 +173,7 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
 
                         const userData = client.userData!
                         const updateNotice = scriptVersion < CLIENT_SCRIPT_VERSION
-                            ? `Please update this script, a newer version with security fixes is available:
+                            ? `Please update this script, a newer version with fixes is available:
   curl -u '${userData.id}:${userData.password}' ${formatOrigin(config.setupProtocol, config.setupHost, config.setupPort)}/update > run.sh
 `
                             : ''

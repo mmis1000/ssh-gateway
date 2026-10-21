@@ -348,9 +348,10 @@ describe("ssh server", () => {
         it.each([
             ["v0 (no header)", `register ${LOCAL_USER} 8080`],
             ["v1", `v1: register ${LOCAL_USER} 8080`],
+            ["v2", `v2: register ${LOCAL_USER} 8080`],
         ])("asks %s scripts to update and still accepts them", async (_, command) => {
             const res = await session.exec(command);
-            expect(res.stdout).toMatch(/^Please update this script, a newer version with security fixes is available:\n/);
+            expect(res.stdout).toMatch(/^Please update this script, a newer version with fixes is available:\n/);
             expect(res.stdout).toContain(`curl -u '${user.id}:${user.password}' http://gateway.test/update > run.sh`);
             expect(res.stdout).toContain("Client accepted.");
         });
