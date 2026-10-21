@@ -2,7 +2,7 @@ import http from "http";
 import os from "os";
 import path from "path";
 import { mkdir, mkdtemp, rm, writeFile } from "fs/promises";
-import { AddressInfo } from "net";
+import net, { AddressInfo } from "net";
 import WebSocket from "ws";
 import { utils } from "ssh2";
 import { openStore } from "../src/migrate";
@@ -188,6 +188,49 @@ export async function writeV1Fixture(saveDir: string, legacyHostKeyDir: string, 
         hostKeys[type] = pair;
     }
     return { users, hostKeys };
+}
+
+/** minimal SOCKS5 client with username/password auth (RFC 1928, RFC 1929) */
+export function socks5Connect(port: number, username: string, password: string, dstHost: string, dstPort: number) {
+    return new Promise<import("net").Socket>((resolve, reject) => {
+        const socket = net.connect(port, "127.0.0.1");
+        let step = 0;
+        let buffer = Buffer.alloc(0);
+        const fail = (err: Error) => {
+            socket.destroy();
+            reject(err);
+        };
+        socket.on("error", fail);
+        socket.on("connect", () => socket.write(Buffer.from([5, 1, 2])));
+        const onData = (chunk: Buffer) => {
+            buffer = Buffer.concat([buffer, chunk]);
+            if (step === 0 && buffer.length >= 2) {
+                if (buffer[1] !== 2) return fail(new Error("no password auth"));
+                buffer = buffer.subarray(2);
+                step = 1;
+                const user = Buffer.from(username);
+                const pass = Buffer.from(password);
+                socket.write(Buffer.concat([Buffer.from([1, user.length]), user, Buffer.from([pass.length]), pass]));
+            }
+            if (step === 1 && buffer.length >= 2) {
+                if (buffer[1] !== 0) return fail(new Error("auth rejected"));
+                buffer = buffer.subarray(2);
+                step = 2;
+                const host = Buffer.from(dstHost);
+                const portBytes = Buffer.from([dstPort >> 8, dstPort & 0xff]);
+                socket.write(Buffer.concat([Buffer.from([5, 1, 0, 3, host.length]), host, portBytes]));
+            }
+            if (step === 2 && buffer.length >= 10) {
+                if (buffer[1] !== 0) return fail(new Error(`connect failed with ${buffer[1]}`));
+                socket.off("data", onData);
+                socket.off("error", fail);
+                const rest = buffer.subarray(10);
+                if (rest.length) socket.unshift(rest);
+                resolve(socket);
+            }
+        };
+        socket.on("data", onData);
+    });
 }
 
 /** open a store that has no legacy data to migrate */

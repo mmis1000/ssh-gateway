@@ -5,6 +5,8 @@ declare module 'buffer-equal-constant-time' {
 declare module 'socksv5' {
     class Server {
         listen(port: number, ip: string, cb: () => void): void
+        address(): import('net').AddressInfo
+        close(cb?: () => void): void
         useAuth(opt: {
             METHOD: number,
             server: (stream: Duplex, cb: (success: boolean | Error) => void) => void

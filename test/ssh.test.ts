@@ -10,11 +10,12 @@ import { BaseAgent, Client, ParsedKey, utils } from "ssh2";
 import WebSocket, { WebSocketServer } from "ws";
 import { createHttpServer } from "../src/http_server";
 import { createSshServer } from "../src/ssh_server";
+import { createSocksServer } from "../src/socks5_server";
 import { User } from "../src/user";
 import { loadHostKeys } from "../src/keys";
 import { openStore } from "../src/migrate";
 import { UserStore } from "../src/store";
-import { close, createConfig, createTempDir, HTTP_HOST, isEntry, listen, openInspector, request, V1User, writeV1Fixture } from "./helpers";
+import { close, createConfig, createTempDir, HTTP_HOST, isEntry, listen, openInspector, request, socks5Connect, V1User, writeV1Fixture } from "./helpers";
 
 // Drives the gateway with the real OpenSSH client the same way template/script.template does:
 // a ControlMaster connection, a "v1: register" exec and a "-O forward -R 22:localhost:<port>" reverse tunnel.
@@ -76,6 +77,7 @@ interface Gateway {
     v1HostKeys: Record<string, { private: string; public: string }>;
     sshPort: number;
     httpPort: number;
+    socksPort: number;
     stop(): Promise<void>;
 }
 
@@ -96,6 +98,9 @@ async function startGateway(): Promise<Gateway> {
     });
     const { server: httpServer } = await createHttpServer(config, store);
     const httpPort = await listen(httpServer);
+    const socksServer = createSocksServer(config, store);
+    await new Promise<void>((resolve) => socksServer.listen(0, "127.0.0.1", resolve));
+    const socksPort = socksServer.address().port;
 
     return {
         saveDir,
@@ -104,8 +109,10 @@ async function startGateway(): Promise<Gateway> {
         v1HostKeys,
         sshPort,
         httpPort,
+        socksPort,
         async stop() {
             await close(httpServer);
+            await new Promise<void>((resolve) => socksServer.close(() => resolve()));
             await new Promise((resolve) => sshServer.close(resolve));
             await cleanup();
         },
@@ -686,6 +693,48 @@ describe("ssh server", () => {
             } finally {
                 inspector.ws.close();
             }
+        });
+
+        describe("socks5", () => {
+            let echo: net.Server;
+            let echoPort: number;
+            const echoConnections = () => new Promise<number>((resolve) => echo.getConnections((_, count) => resolve(count)));
+
+            beforeAll(async () => {
+                echo = net.createServer((socket) => socket.pipe(socket));
+                echoPort = await new Promise<number>((resolve) => echo.listen(0, "127.0.0.1", () => resolve((echo.address() as net.AddressInfo).port)));
+            });
+
+            afterAll(() => new Promise<void>((resolve) => echo.close(() => resolve())));
+
+            it("reaches ports on the client machine", async () => {
+                const socket = await socks5Connect(gateway.socksPort, user.id!, user.password!, "localhost", echoPort);
+                socket.write("ping");
+                const reply = await new Promise<string>((resolve) => socket.once("data", (data) => resolve(String(data))));
+                expect(reply).toBe("ping");
+                socket.end();
+            });
+
+            it("rejects a wrong password", async () => {
+                await expect(socks5Connect(gateway.socksPort, user.id!, "wrong", "localhost", echoPort)).rejects.toThrow(/auth rejected/);
+            });
+
+            it("closes the tunneled connections", async () => {
+                for (let i = 0; i < 40; i++) {
+                    const socket = await socks5Connect(gateway.socksPort, user.id!, user.password!, "localhost", echoPort);
+                    socket.write(`hello ${i}`);
+                    await new Promise((resolve) => socket.once("data", resolve));
+                    // most end politely, some are reset (RST, no end event on the gateway)
+                    if (i % 4 === 0) socket.resetAndDestroy();
+                    else socket.end();
+                }
+                let open = await echoConnections();
+                for (let i = 0; i < 30 && open > 0; i++) {
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                    open = await echoConnections();
+                }
+                expect(open).toBe(0);
+            });
         });
 
         it("returns 404 for missing files", async () => {

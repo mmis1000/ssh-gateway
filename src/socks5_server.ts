@@ -1,3 +1,4 @@
+import './compat'
 import { User } from './user'
 import { UserStore } from './store'
 const inspect = require('util').inspect;
@@ -5,7 +6,8 @@ import { createServer } from 'socksv5';
 import socksPasswordAuth from "./socks5_auth_password.js";
 import { Config } from './interface';
 import { Duplex } from 'stream';
-export default function(config: Config, store: UserStore) {
+import { closeWhenDone } from './utils';
+export function createSocksServer(config: Config, store: UserStore) {
     const srv = createServer(function(info, accept, deny) {
         const stream = accept(true);
         const userInfo = stream.userInfo;
@@ -44,8 +46,15 @@ export default function(config: Config, store: UserStore) {
                     }
                 })
                 
+                closeWhenDone(dstStream)
+
                 stream.on('end', function () {
                     dstStream.end();
+                })
+
+                // also close the channel when the visitor disconnects abruptly
+                stream.on('close', function () {
+                    dstStream.destroy();
                 })
                 
                 stream.pipe(dstStream).pipe(stream);
@@ -56,19 +65,28 @@ export default function(config: Config, store: UserStore) {
         })
     });
     
-    srv.listen(config.socksListen, "0.0.0.0", function() {
-        console.log('SOCKS server listening on port ' + config.socksListen);
-    });
-
     srv.useAuth(socksPasswordAuth(function(stream: Duplex & { user: string, userInfo: User }, user: string, password: string, cb: (success: boolean | Error) => void) {
         store.findById(user)
         .then(function (userInfo) {
             stream.user = user;
             stream.userInfo = userInfo;
-            cb(userInfo.password === password);
+            return userInfo.password === password;
+        }, function () {
+            return false
         })
-        .catch(function (err) {
-            cb(false)
+        // outside the lookup chain, an error thrown by cb must not call it again
+        .then(function (success) {
+            cb(success)
         })
     }));
+
+    return srv
+}
+
+export default function(config: Config, store: UserStore) {
+    const srv = createSocksServer(config, store)
+
+    srv.listen(config.socksListen, "0.0.0.0", function() {
+        console.log('SOCKS server listening on port ' + config.socksListen);
+    });
 }
