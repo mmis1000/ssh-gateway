@@ -10,7 +10,7 @@ import mime from "mime";
 import { UserStore } from "./store";
 import ssh2_streams from 'ssh2-streams';
 const SFTPStream = ssh2_streams.SFTPStream;
-import { decodePath, encodePath, getContentType, parseRawData } from "./utils";
+import { asSocket, decodePath, encodePath, getContentType, parseRawData } from "./utils";
 import getFastReadStream from "./ssh_fast_read_stream";
 import httpProxy from 'http-proxy';
 import { RawData, WebSocketServer } from 'ws';
@@ -140,11 +140,6 @@ export async function createHttpServer(config: Config, store: UserStore) {
         let id = domain.split('.')[0];
 
         store.findByDomain(id)
-        .then(async function (user) {
-            // ensure client exist
-            await user.getClient();
-            return user;
-        })
         .then(async function (userData) {
             if (userData.httpPort !== 0) {
                 const agent = await userData.getConnectionAgent();
@@ -160,15 +155,17 @@ export async function createHttpServer(config: Config, store: UserStore) {
                         host: 'localhost',
                         port: userData.httpPort!
                     },
-                    agent: Object.assign(Object.create(http.Agent), {
-                        createConnection: function (_opts: any, cb: (err?: Error, stream?: Duplex) => void) {
+                    agent: Object.assign(new http.Agent(), {
+                        // http.Agent accepts a callback when the connection is created asynchronously
+                        createConnection: function (_opts: any, cb: (err: Error | null, stream?: Duplex) => void) {
                             agent.createConnection(function(err, stream) {
                                 if (err) {
                                     return cb(err);
                                 }
                                 console.log(`${userData.id}: [HTTP] Forward ${req.method} http connection established at ${req.url} of ${userData.domainName}`);
-                                cb(undefined, stream);
+                                cb(null, asSocket(stream!));
                             })
+                            return undefined
                         }
                     })
                 });
@@ -241,8 +238,7 @@ Disallow: /
                                 }
                                 userData.clearSuicideTimer()
                                 console.log(`${userData.id}: [HTTP] Forward ${req.method} http connection established at ${req.originalUrl} of ${userData.domainName}`);
-                                // FIXME:  stream does not fully implement socket
-                                cb(null as never, stream as any);
+                                cb(null as never, asSocket(stream!));
                             })
 
                             return undefined as never

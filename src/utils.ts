@@ -252,6 +252,23 @@ export const createTaskQueue = <Result, Args extends any[] = []>(timeout: number
 export function encodePath(str: string) {
     return str.split('/').map((p) => encodeURIComponent(p)).join('/')
 }
+const SOCKET_ONLY_METHODS = ['setTimeout', 'setNoDelay', 'setKeepAlive', 'ref', 'unref'] as const
+
+/**
+ * Let an ssh channel stand in for a net.Socket in http.request and http.Agent,
+ * which call socket only methods on the connection. The channel has no timeouts or
+ * keep alive of its own, so they are no-ops.
+ */
+export function asSocket<T extends object>(stream: T) {
+    const target = stream as any
+    for (const name of SOCKET_ONLY_METHODS) {
+        if (typeof target[name] !== 'function') {
+            target[name] = function (this: T) { return this }
+        }
+    }
+    return stream as T & import('net').Socket
+}
+
 export function getContentType(fileName: string) {
     const ext = path.extname(fileName)
     return ext ? (mime.getType(ext) || 'application/octet-stream') : 'application/octet-stream'

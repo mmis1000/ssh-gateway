@@ -6,6 +6,7 @@ import path from "path";
 import { ChildProcess, execFile, spawn } from "child_process";
 import { chmod, mkdir, readFile, symlink, writeFile } from "fs/promises";
 import { BaseAgent, Client, ParsedKey, utils } from "ssh2";
+import WebSocket, { WebSocketServer } from "ws";
 import { createHttpServer } from "../src/http_server";
 import { createSshServer } from "../src/ssh_server";
 import { User } from "../src/user";
@@ -449,6 +450,27 @@ describe("ssh server", () => {
                 expect(failed.message).toContain("no longer in history");
             } finally {
                 inspector.ws.close();
+            }
+        });
+
+        it("proxies websockets through the tunnel", async () => {
+            const echo = new WebSocketServer({ noServer: true });
+            target.on("upgrade", (req, socket, head) => {
+                echo.handleUpgrade(req, socket, head, (ws) => ws.on("message", (data) => ws.send(`echo: ${data}`)));
+            });
+
+            const ws = new WebSocket(`ws://127.0.0.1:${gateway.httpPort}/socket`, { headers: { Host: host() } });
+            try {
+                await new Promise((resolve, reject) => {
+                    ws.once("open", resolve);
+                    ws.once("error", reject);
+                });
+                ws.send("hello");
+                const reply = await new Promise<string>((resolve) => ws.once("message", (data) => resolve(data.toString())));
+                expect(reply).toBe("echo: hello");
+            } finally {
+                ws.close();
+                echo.close();
             }
         });
 
