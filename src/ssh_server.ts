@@ -15,13 +15,9 @@ const HANDSHAKE_TIMEOUT = 60 * 1000
 
 const V1_HEADER = 'v1:'
 
-export default function(config: Config) {
-    const server = new ssh2.Server({
-        hostKeys: [
-            fs.readFileSync(path.resolve(__dirname, '../ssh_host_rsa_key')),
-            fs.readFileSync(path.resolve(__dirname, '../ssh_host_ecdsa_key')),
-            fs.readFileSync(path.resolve(__dirname, '../ssh_host_ed25519_key')),
-        ]
+export function createSshServer(config: Config, hostKeys: Buffer[]) {
+    return new ssh2.Server({
+        hostKeys
     }, function(client: Connection & { userData?: User }) {
         console.log('A new ssh client connected!');
 
@@ -188,7 +184,17 @@ To get new version of current script, fetch it from ${config.setupProtocol}://${
                 console.log('Client disconnected');
             }
         });
-    }).listen(config.sshListen, '0.0.0.0', function() {
+    })
+}
+
+export default function(config: Config) {
+    const server = createSshServer(config, [
+        fs.readFileSync(path.resolve(__dirname, '../ssh_host_rsa_key')),
+        fs.readFileSync(path.resolve(__dirname, '../ssh_host_ecdsa_key')),
+        fs.readFileSync(path.resolve(__dirname, '../ssh_host_ed25519_key')),
+    ])
+
+    server.listen(config.sshListen, '0.0.0.0', function() {
         console.log('SSH server listening on port ' + (server.address() as AddressInfo).port);
     });
 }

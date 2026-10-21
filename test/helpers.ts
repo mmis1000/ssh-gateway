@@ -66,7 +66,7 @@ export function request(
     port: number,
     host: string,
     urlPath: string,
-    options: { method?: string; auth?: string; headers?: http.OutgoingHttpHeaders } = {}
+    options: { method?: string; auth?: string; headers?: http.OutgoingHttpHeaders; body?: string } = {}
 ) {
     return new Promise<Response>((resolve, reject) => {
         const req = http.request(
@@ -92,6 +92,6 @@ export function request(
             }
         );
         req.on("error", reject);
-        req.end();
+        req.end(options.body);
     });
 }
