@@ -41,6 +41,30 @@ describe("http server", () => {
             expect(res.body).toContain(`curl -X POST -u 'username:password' http://${SETUP_HOST}:80/setup > run.sh`);
         });
 
+        it("keeps plain text instructions for curl", async () => {
+            const res = await request(port, SETUP_HOST, "/", { headers: { Accept: "*/*", "User-Agent": "curl/8.5.0" } });
+            expect(res.headers["content-type"]).toMatch(/^text\/plain/);
+            expect(res.body).toContain("Run following command to setup the forward");
+        });
+
+        it("shows the landing page to browsers", async () => {
+            const res = await request(port, SETUP_HOST, "/", {
+                headers: { Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8" },
+            });
+            expect(res.status).toBe(200);
+            expect(res.headers["content-type"]).toMatch(/^text\/html/);
+            expect(res.body).toContain(`<title>SSH Gateway · ${SETUP_HOST}</title>`);
+            // default port dropped, quotes escaped in the page and in the copy button
+            expect(res.body).toContain(`curl -X POST -u &#39;username:password&#39; http://${SETUP_HOST}/setup &gt; run.sh`);
+            expect(res.body).toContain(`data-copy="curl -X POST -u &#39;username:password&#39; http://${SETUP_HOST}/setup &gt; run.sh"`);
+            expect(res.body).toContain("chmod +x run.sh &amp;&amp; ./run.sh");
+            expect(res.body).toContain("This gateway is private");
+            expect(res.body).toContain(`http://brave-otter-42.${HTTP_HOST}/`);
+            expect(res.body).toContain('href="/app/"');
+            // self contained, no third party requests
+            expect(res.body).not.toMatch(/<(script|link)[^>]+(src|href)="https?:/);
+        });
+
         it("ignores the port in the host header", async () => {
             const res = await request(port, `${SETUP_HOST}:8080`, "/");
             expect(res.body).toContain("Run following command to setup the forward");
@@ -102,6 +126,25 @@ describe("http server", () => {
         });
     });
 
+    describe("public gateway", () => {
+        it("leaves out the account on the landing page", async () => {
+            const temp = await createTempDir();
+            const publicSave = path.join(temp.dir, "save");
+            const config = createConfig(publicSave, { setupRequireAuth: false, setupPort: 8443, setupProtocol: "https" });
+            const { server: publicServer } = await createHttpServer(config, await openTestStore(publicSave));
+            const publicPort = await listen(publicServer);
+            try {
+                const res = await request(publicPort, SETUP_HOST, "/", { headers: { Accept: "text/html" } });
+                expect(res.body).toContain(`curl -X POST https://${SETUP_HOST}:8443/setup &gt; run.sh`);
+                expect(res.body).not.toContain("username:password");
+                expect(res.body).not.toContain("This gateway is private");
+            } finally {
+                await close(publicServer);
+                await temp.cleanup();
+            }
+        });
+    });
+
     describe("inspector websocket", () => {
         it.each([
             ["unknown user", "no-such-user", "x"],
@@ -130,9 +173,9 @@ describe("http server", () => {
     });
 
     describe("user content host", () => {
-        it("shows the abuse notice on the bare host", async () => {
+        it("shows a notice on the bare host", async () => {
             const res = await request(port, HTTP_HOST, "/");
-            expect(res.body).toContain(`To report abuse, go to http://${SETUP_HOST}:80/report-abuse`);
+            expect(res.body).toBe("This is a domain that serves user content.");
         });
 
         it("disallows robots on user domains", async () => {

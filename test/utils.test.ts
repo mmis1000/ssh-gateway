@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { getContentType, parseRawData } from "../src/utils";
+import { formatOrigin, getContentType, parseRawData } from "../src/utils";
 
 // mime is ESM only since v4, these make sure it still loads and resolves from the CommonJS build
 describe("getContentType", () => {
@@ -39,5 +39,17 @@ describe("parseRawData", () => {
             message: "unknown content",
             cause: payload,
         }));
+    });
+});
+
+describe("formatOrigin", () => {
+    it("omits default ports", () => {
+        expect(formatOrigin("https", "gateway.test", 443)).toBe("https://gateway.test");
+        expect(formatOrigin("http", "gateway.test", 80)).toBe("http://gateway.test");
+    });
+
+    it("keeps other ports", () => {
+        expect(formatOrigin("https", "gateway.test", 8443)).toBe("https://gateway.test:8443");
+        expect(formatOrigin("http", "gateway.test", 443)).toBe("http://gateway.test:443");
     });
 });

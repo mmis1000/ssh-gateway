@@ -10,7 +10,7 @@ import mime from "mime";
 import { UserStore } from "./store";
 import ssh2_streams from 'ssh2-streams';
 const SFTPStream = ssh2_streams.SFTPStream;
-import { asSocket, decodePath, encodePath, getContentType, parseRawData } from "./utils";
+import { asSocket, decodePath, encodePath, formatOrigin, getContentType, parseRawData } from "./utils";
 import getFastReadStream from "./ssh_fast_read_stream";
 import httpProxy from 'http-proxy';
 import { RawData, WebSocketServer } from 'ws';
@@ -464,8 +464,7 @@ Disallow: /
             return next();
         }
 
-        res.end(`This is a domain that serves user content.
-To report abuse, go to ${config.setupProtocol}://${config.setupHost}:${config.setupPort}/report-abuse`)
+        res.end(`This is a domain that serves user content.`)
     })
 
     const templatePromise = fs.readFile(path.join(__dirname, '../template/script.template'), 'utf8')
@@ -584,7 +583,26 @@ To report abuse, go to ${config.setupProtocol}://${config.setupHost}:${config.se
             return next();
         }
 
-        res.end(`
+        // browsers get the landing page, curl and other tools keep the plain text instructions
+        if (req.accepts(['text/plain', 'text/html']) === 'text/html') {
+            const setupOrigin = formatOrigin(config.setupProtocol, config.setupHost, config.setupPort)
+            const exampleHost = `brave-otter-42.${config.httpHost}`
+            return res.render('landing', {
+                setupHost: config.setupHost,
+                setupOrigin,
+                setupCommand: `curl -X POST${config.setupRequireAuth ? " -u 'username:password'" : ''} ${setupOrigin}/setup > run.sh`,
+                runCommand: 'chmod +x run.sh && ./run.sh',
+                requireAuth: config.setupRequireAuth,
+                inspectorUrl: '/app/',
+                exampleHost,
+                exampleUrl: formatOrigin(config.httpProtocol, exampleHost, config.httpPort),
+                socksHost: config.socksHost,
+                socksPort: config.socksPort,
+                sshPort: config.sshPort,
+            })
+        }
+
+        res.type('text/plain').end(`
 Run following command to setup the forward !!!
 
 $ curl -X POST${config.setupRequireAuth ? ' -u \'username:password\'': ''} ${config.setupProtocol}://${config.setupHost}:${config.setupPort}/setup > run.sh

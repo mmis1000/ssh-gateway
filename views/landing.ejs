@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SSH Gateway · <%= setupHost %></title>
+  <meta name="description" content="Share a local web server or folder over HTTPS with one command. No client to install, only ssh.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232f6fde'/><path d='M9 11l6 5-6 5M17 22h7' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1d2330;
+      --muted: #5f6879;
+      --border: #e2e5eb;
+      --code-bg: #111827;
+      --code-text: #e5e7eb;
+      --code-muted: #8b93a5;
+      --accent: #2f6fde;
+      --accent-soft: #e6eefc;
+      --ok: #1f9d55;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #15171c;
+        --panel: #1c1f26;
+        --text: #e3e6ec;
+        --muted: #9aa2b3;
+        --border: #2c313b;
+        --code-bg: #0d1016;
+        --accent: #7aa7ff;
+        --accent-soft: #1f2a40;
+        --ok: #3ccf7a;
+        color-scheme: dark;
+      }
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.55 Inter, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); }
+    code { font-family: var(--mono); font-size: 0.92em; }
+    .wrap { width: min(1040px, 100%); margin: 0 auto; padding: 0 20px; }
+
+    header.top { border-bottom: 1px solid var(--border); background: var(--panel); }
+    header.top .wrap { display: flex; align-items: center; gap: 12px; height: 60px; }
+    .brand { display: flex; align-items: center; gap: 10px; color: inherit; font-weight: 700; text-decoration: none; white-space: nowrap; }
+    .brand svg { width: 28px; height: 28px; }
+    .host { overflow: hidden; color: var(--muted); font-family: var(--mono); font-size: 13px; white-space: nowrap; text-overflow: ellipsis; }
+    .spacer { flex: 1; }
+    .nav-link { font-size: 14px; font-weight: 600; text-decoration: none; }
+
+    .hero { padding: 64px 0 32px; }
+    .hero h1 { max-width: 15em; margin: 0 0 16px; font-size: clamp(30px, 5vw, 46px); line-height: 1.12; letter-spacing: -0.02em; }
+    .hero p { max-width: 38em; margin: 0; color: var(--muted); font-size: 18px; }
+
+    .start { display: grid; gap: 28px; grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr); align-items: start; padding: 24px 0 56px; }
+    .card { padding: 24px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+    .card h2 { margin: 0 0 4px; font-size: 18px; }
+    .card > p { margin: 0 0 18px; color: var(--muted); font-size: 14px; }
+    ol.steps { margin: 0; padding: 0; list-style: none; counter-reset: step; }
+    ol.steps li { position: relative; padding: 0 0 20px 40px; counter-increment: step; }
+    ol.steps li:last-child { padding-bottom: 0; }
+    ol.steps li::before {
+      content: counter(step);
+      position: absolute; left: 0; top: 0;
+      display: grid; place-items: center;
+      width: 26px; height: 26px; border-radius: 50%;
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 13px; font-weight: 700;
+    }
+    .step-title { margin: 1px 0 8px; font-weight: 600; }
+    .step-note { margin: 8px 0 0; color: var(--muted); font-size: 14px; }
+
+    .cmd { display: flex; align-items: flex-start; gap: 8px; padding: 10px 10px 10px 14px; border-radius: 8px; background: var(--code-bg); color: var(--code-text); }
+    .cmd code { flex: 1; min-width: 0; padding-top: 3px; font-size: 13.5px; overflow-wrap: anywhere; }
+    .cmd code::before { content: '$ '; color: var(--code-muted); }
+    .copy {
+      flex: none; padding: 4px 10px; border: 1px solid #374151; border-radius: 6px;
+      background: transparent; color: var(--code-text); font: 600 12px/1.4 inherit; cursor: pointer;
+    }
+    .copy:hover { background: #1f2937; }
+    .copy.done { border-color: var(--ok); color: var(--ok); }
+
+    .terminal { border-radius: 12px; background: var(--code-bg); color: var(--code-text); overflow: hidden; }
+    .terminal .bar { display: flex; gap: 6px; padding: 12px 14px; border-bottom: 1px solid #1f2937; }
+    .terminal .bar span { width: 10px; height: 10px; border-radius: 50%; background: #374151; }
+    .terminal pre { margin: 0; padding: 16px 18px 20px; font: 13px/1.6 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .terminal .dim { color: var(--code-muted); }
+    .terminal .ok { color: #4ade80; }
+    .terminal .link { color: #93c5fd; }
+    .caption { margin: 10px 4px 0; color: var(--muted); font-size: 13px; }
+
+    section.block { padding: 48px 0; border-top: 1px solid var(--border); }
+    section.block h2 { margin: 0 0 24px; font-size: 24px; letter-spacing: -0.01em; }
+    .features { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+    .feature { padding: 20px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+    .feature svg { width: 26px; height: 26px; margin-bottom: 10px; color: var(--accent); }
+    .feature h3 { margin: 0 0 6px; font-size: 16px; }
+    .feature p { margin: 0; color: var(--muted); font-size: 14px; }
+    .feature code { overflow-wrap: anywhere; }
+
+    .flow { display: flex; align-items: stretch; gap: 0; }
+    .node { flex: 1; padding: 18px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); text-align: center; }
+    .node strong { display: block; margin-bottom: 4px; }
+    .node span { color: var(--muted); font-size: 13px; }
+    .edge { display: flex; flex-direction: column; justify-content: center; align-items: center; width: 150px; padding: 0 8px; color: var(--muted); font-size: 12px; text-align: center; }
+    .edge .line { width: 100%; height: 2px; margin: 6px 0; background: repeating-linear-gradient(90deg, var(--accent) 0 8px, transparent 8px 14px); }
+    .flow-notes { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); margin: 24px 0 0; padding: 0; list-style: none; color: var(--muted); font-size: 14px; }
+    .flow-notes strong { color: var(--text); }
+
+    .reqs { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+    .reqs dl { margin: 0; }
+    .reqs dt { font-weight: 600; }
+    .reqs dd { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+
+    footer { padding: 28px 0 40px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+    footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+
+    @media (max-width: 560px) {
+      .host { display: none; }
+    }
+    @media (max-width: 820px) {
+      .start { grid-template-columns: 1fr; }
+      .flow { flex-direction: column; }
+      .edge { width: auto; padding: 10px 0; }
+      .edge .line { width: 2px; height: 22px; background: repeating-linear-gradient(180deg, var(--accent) 0 6px, transparent 6px 10px); }
+      .hero { padding-top: 40px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="/">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#2f6fde"/><path d="M9 11l6 5-6 5M17 22h7" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        SSH Gateway
+      </a>
+      <span class="host"><%= setupHost %></span>
+      <span class="spacer"></span>
+      <a class="nav-link" href="<%= inspectorUrl %>">Inspector</a>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap">
+      <section class="hero">
+        <h1>Put your localhost on the internet with one command.</h1>
+        <p>
+          Share a local web server or a folder over HTTPS. There is no client to install:
+          the setup script only uses <code>ssh</code>, which your machine already has.
+        </p>
+      </section>
+
+      <section class="start" id="start">
+        <div class="card">
+          <h2>Get started</h2>
+          <p>Takes about a minute on macOS, Linux or WSL.</p>
+          <ol class="steps">
+            <li>
+              <div class="step-title">Download your setup script</div>
+              <div class="cmd"><code><%= setupCommand %></code><button class="copy" type="button" data-copy="<%= setupCommand %>">Copy</button></div>
+              <% if (requireAuth) { %>
+                <p class="step-note">This gateway is private. Ask its administrator for the account to use instead of <code>username:password</code>.</p>
+              <% } %>
+            </li>
+            <li>
+              <div class="step-title">Run it</div>
+              <div class="cmd"><code><%= runCommand %></code><button class="copy" type="button" data-copy="<%= runCommand %>">Copy</button></div>
+            </li>
+            <li>
+              <div class="step-title">Choose what to share</div>
+              <p class="step-note">
+                Enter the port of your local server, like <code>8080</code>, or <code>0</code> to serve a folder instead.
+                Keep the script running while you want the address to stay online.
+              </p>
+            </li>
+          </ol>
+        </div>
+
+        <div>
+          <div class="terminal" role="img" aria-label="Example output of the setup script">
+            <div class="bar"><span></span><span></span><span></span></div>
+<pre><span class="dim">$</span> ./run.sh
+Forward which port as the http entry? <span class="ok">8080</span>
+<span class="dim">preparing to register client...</span>
+<span class="ok">Client accepted.</span>
+Forward server is opened at <span class="link"><%= exampleUrl %>/</span>
+Inspect requests at <span class="link"><%= setupOrigin %>/app/#…</span></pre>
+          </div>
+          <p class="caption">Each script gets its own address, and keeps it when you run it again.</p>
+        </div>
+      </section>
+    </div>
+
+    <section class="block">
+      <div class="wrap">
+        <h2>What you get</h2>
+        <div class="features">
+          <div class="feature">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></svg>
+            <h3>A public HTTPS address</h3>
+            <p>Your local server answers at <code><%= exampleHost %></code>. WebSockets work too.</p>
+          </div>
+          <div class="feature">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+            <h3>Folders without a web server</h3>
+            <p>Serve a directory as a site with listings and range requests. Files are read from your machine on demand, nothing is uploaded.</p>
+          </div>
+          <div class="feature">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <h3>Request inspector</h3>
+            <p>Watch requests live with headers and bodies, then replay them. <a href="<%= inspectorUrl %>">Open the inspector</a>.</p>
+          </div>
+          <div class="feature">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h16M14 6l6 6-6 6"/><path d="M4 6v12"/></svg>
+            <h3>SOCKS5 tunnel</h3>
+            <p>While sharing a folder, reach any port on your machine through <code>socks5://<%= socksHost %>:<%= socksPort %></code> with your id and password.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="block">
+      <div class="wrap">
+        <h2>How it works</h2>
+        <div class="flow" aria-label="Visitors connect to the gateway, which reaches your computer through an SSH tunnel your computer opened">
+          <div class="node"><strong>Your computer</strong><span>local server or folder</span></div>
+          <div class="edge">SSH reverse tunnel<div class="line"></div>opened by your computer</div>
+          <div class="node"><strong><%= setupHost %></strong><span>this gateway</span></div>
+          <div class="edge">HTTPS<div class="line"></div>&nbsp;</div>
+          <div class="node"><strong>Visitors</strong><span>browsers, webhooks, APIs</span></div>
+        </div>
+        <ul class="flow-notes">
+          <li><strong>Outgoing only.</strong> Your computer connects out to port <%= sshPort %>, so it works behind NAT and firewalls without opening ports.</li>
+          <li><strong>Your keys.</strong> The script carries a key made for you. Folder mode runs a private <code>sshd</code> that only accepts this gateway.</li>
+          <li><strong>Stays up.</strong> The script checks the tunnel and reconnects on its own when the network drops.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section class="block">
+      <div class="wrap">
+        <h2>Requirements</h2>
+        <div class="reqs">
+          <dl><dt>macOS or Linux</dt><dd>On Windows, run the script inside WSL.</dd></dl>
+          <dl><dt><code>ssh</code></dt><dd>The OpenSSH client, installed by default almost everywhere.</dd></dl>
+          <dl><dt><code>sshd</code> for folders</dt><dd>Only needed to serve a folder. It runs as you, on a random local port.</dd></dl>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>SSH Gateway on <%= setupHost %></span>
+      <span>Your script prints an update command to get a new version later.</span>
+    </div>
+  </footer>
+
+  <script>
+    document.addEventListener('click', function (event) {
+      var button = event.target.closest('.copy')
+      if (!button) return
+      var done = function () {
+        button.textContent = 'Copied'
+        button.classList.add('done')
+        setTimeout(function () { button.textContent = 'Copy'; button.classList.remove('done') }, 1500)
+      }
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(button.dataset.copy).then(done, function () {})
+      } else {
+        // http without TLS has no clipboard api, select the command instead
+        var range = document.createRange()
+        range.selectNodeContents(button.previousElementSibling)
+        var selection = window.getSelection()
+        selection.removeAllRanges()
+        selection.addRange(range)
+      }
+    })
+  </script>
+</body>
+</html>

@@ -269,6 +269,11 @@ export function asSocket<T extends object>(stream: T) {
     return stream as T & import('net').Socket
 }
 
+/** `protocol://host[:port]`, without the port when it is the default one for the protocol */
+export function formatOrigin(protocol: string, host: string, port: number | string) {
+    const isDefault = (protocol === 'https' && Number(port) === 443) || (protocol === 'http' && Number(port) === 80)
+    return `${protocol}://${host}${isDefault ? '' : `:${port}`}`
+}
 export function getContentType(fileName: string) {
     const ext = path.extname(fileName)
     return ext ? (mime.getType(ext) || 'application/octet-stream') : 'application/octet-stream'
