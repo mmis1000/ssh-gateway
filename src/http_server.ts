@@ -270,9 +270,7 @@ Disallow: /
                     )
 
                     client.on('response', function(msg) {
-                        res.writeHead(msg.statusCode!, Object.assign({}, msg.headers, {
-                            "X-Proxy-User": userData.id
-                        }))
+                        res.writeHead(msg.statusCode!, msg.headers)
 
 
                         pipeline(

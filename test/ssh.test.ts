@@ -294,7 +294,8 @@ describe("ssh server", () => {
             const res = await request(gateway.httpPort, host(), "/hello/world?q=1");
             expect(res.status).toBe(200);
             expect(res.headers["x-target"]).toBe("yes");
-            expect(res.headers["x-proxy-user"]).toBe(user.id);
+            // the user id is also the login name, do not expose it to visitors
+            expect(res.headers["x-proxy-user"]).toBeUndefined();
 
             const echoed = JSON.parse(res.body);
             expect(echoed.method).toBe("GET");
