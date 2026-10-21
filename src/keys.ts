@@ -18,13 +18,30 @@ export interface KeyPair {
     public: string,
 }
 
-export function generateKeyPair(type: KeyType, comment: string) {
+function generateOnce(type: KeyType, comment: string) {
     return new Promise<KeyPair>((resolve, reject) => {
         utils.generateKeyPair(type, { ...KEY_OPTIONS[type], comment }, (err, keys) => {
             if (err) return reject(err)
             resolve({ private: keys.private, public: keys.public })
         })
     })
+}
+
+function isValidPair(keys: KeyPair) {
+    const parsedPrivate = utils.parseKey(keys.private)
+    const parsedPublic = utils.parseKey(keys.public)
+    return !(parsedPrivate instanceof Error) && !(parsedPublic instanceof Error)
+        && parsedPrivate.getPublicSSH().equals(parsedPublic.getPublicSSH())
+}
+
+export async function generateKeyPair(type: KeyType, comment: string) {
+    // ssh2 drops a leading zero byte of ed25519 keys, so about 1 in 256 of them is
+    // malformed and rejected by both ssh2 and OpenSSH, generate those again
+    for (let attempt = 0; attempt < 10; attempt++) {
+        const keys = await generateOnce(type, comment)
+        if (isValidPair(keys)) return keys
+    }
+    throw new Error(`unable to generate a valid ${type} key`)
 }
 
 /** write a key pair as `<file>` (0600) and `<file>.pub` (0644) */

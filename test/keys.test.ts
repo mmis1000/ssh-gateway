@@ -4,7 +4,7 @@ import { readdir, readFile, stat, unlink } from "fs/promises";
 import path from "path";
 import { promisify } from "util";
 import { utils } from "ssh2";
-import { fingerprint, loadHostKeys } from "../src/keys";
+import { fingerprint, generateKeyPair, loadHostKeys } from "../src/keys";
 import { createTempDir } from "./helpers";
 
 const mode = async (file: string) => (await stat(file)).mode & 0o777;
@@ -62,5 +62,19 @@ describe("loadHostKeys", () => {
         const pub = path.join(dir, "ssh_host_ed25519_key.pub");
         const { stdout } = await promisify(execFile)("ssh-keygen", ["-lf", pub]);
         expect(stdout.split(" ")[1]).toBe(fingerprint(await readFile(pub, "utf8")));
+    });
+});
+
+describe("generateKeyPair", () => {
+    // ssh2 drops a leading zero byte of ed25519 keys, about 1 in 256 keys came out malformed
+    it("only returns keys that parse, over many ed25519 keys", async () => {
+        const pairs = await Promise.all(Array.from({ length: 1500 }, () => generateKeyPair("ed25519", "test")));
+        const broken = pairs.filter((pair) => {
+            const parsedPrivate = utils.parseKey(pair.private);
+            const parsedPublic = utils.parseKey(pair.public);
+            return parsedPrivate instanceof Error || parsedPublic instanceof Error
+                || !parsedPrivate.getPublicSSH().equals(parsedPublic.getPublicSSH());
+        });
+        expect(broken).toHaveLength(0);
     });
 });
