@@ -1,5 +1,44 @@
 #! /bin/bash
 
+function usage {
+    cat <<USAGE
+Usage: $(basename "$0") [options]
+
+Opens a tunnel from *TARGET_HOST* to this computer. Without options it asks what to share.
+
+  -p, --port PORT   share the web server on local PORT
+  -d, --dir DIR     share the directory DIR as a static site
+  -y, --yes         accept the notice below without asking
+  -h, --help        show this help and exit
+
+Without a terminal (cron, services) --yes and one of --port or --dir are required.
+USAGE
+}
+
+FORWARD_PORT=""
+STATIC_DIRECTORY=""
+ASSUME_YES=0
+while [ $# -gt 0 ]
+do
+    case "$1" in
+        -h|--help) usage; exit 0;;
+        -y|--yes) ASSUME_YES=1;;
+        -p|--port)
+            [ $# -ge 2 ] || { echo "$1 needs a port, see --help" >&2; exit 2; }
+            FORWARD_PORT="$2"; shift;;
+        -d|--dir)
+            [ $# -ge 2 ] || { echo "$1 needs a directory, see --help" >&2; exit 2; }
+            STATIC_DIRECTORY="$2"; shift;;
+        *) echo "Unknown option $1, see --help" >&2; exit 2;;
+    esac
+    shift
+done
+if [ -n "$FORWARD_PORT" ] && [ -n "$STATIC_DIRECTORY" ]
+then
+    echo "Use either --port or --dir, not both" >&2
+    exit 2
+fi
+
 export CURRENT_USER="$(id -un)"
 
 unameOut="$(uname -s)"
@@ -29,10 +68,30 @@ export CLIENT_SERVER_KEY="*CLIENT_SERVER_KEY*"
 # host keys of the gateway, so nobody else can pretend to be it
 export KNOWN_HOSTS="*KNOWN_HOSTS*"
 
-export WORKDIR="$HOME/.gateway-mmis1000/$TARGET_USER"
-export CONTROL_SOCK="$WORKDIR/control.sock"
+export WORKDIR="$HOME/.ssh-gateway/$TARGET_HOST/$TARGET_USER"
+# unix socket paths are limited to about 104 bytes (macOS) and ssh appends 17 characters while
+# creating it, so the socket lives higher up than the rest of the files
+export CONTROL_SOCK="$HOME/.ssh-gateway/$TARGET_USER.sock"
+if [ $(( ${#CONTROL_SOCK} + 17 )) -gt 100 ]
+then
+    echo "The path of the control socket, $CONTROL_SOCK, is too long for a unix socket." >&2
+    echo "Run this script with a shorter HOME, for example: HOME=/tmp/\$USER $0" >&2
+    exit 1
+fi
+
+# scripts before version 5 kept their files in ~/.gateway-mmis1000/<id>, move ours over.
+# Other tunnels may still use older scripts, so the parent goes only once it is empty
+OLD_WORKDIR="$HOME/.gateway-mmis1000/$TARGET_USER"
+if [ -d "$OLD_WORKDIR" ] && [ ! -e "$WORKDIR" ]
+then
+    mkdir -p "$(dirname "$WORKDIR")"
+    mv "$OLD_WORKDIR" "$WORKDIR"
+    rmdir "$HOME/.gateway-mmis1000" 2>/dev/null
+fi
 
 mkdir -p "$WORKDIR"
+# keys live here, keep it to ourselves
+chmod 700 "$HOME/.ssh-gateway" "$WORKDIR"
 
 # a second copy would share the control socket and tear down the tunnel of the first one
 LOCK_DIR="$WORKDIR/run.lock"
@@ -206,50 +265,80 @@ function watch_script {
 watch_script &
 
 
-echo "===EULA=== 
-Use of this software means you ALLOW us to setup a ssh daemon and establish connection tunnel on your computer.
-If you do not agree about this, please enter ^C to exit right now!
-=========="
-read -p "press any key to continue..." -n 1
+function valid_port {
+    [[ "$1" =~ ^[0-9]+$ ]] && [ "$((10#$1))" -le 65535 ]
+}
+
+# prints the absolute path of the directory $1, ~ expanded
+function resolve_dir {
+    local dir="${1/#\~/$HOME}"
+    [ -d "$dir" ] && (cd "$dir" && pwd)
+}
+
+# questions need a terminal, a closed stdin would make them loop forever
+function need_terminal {
+    if [ ! -t 0 ]
+    then
+        echo "No terminal to ask $1, use $2 (see --help)" >&2
+        exit 2
+    fi
+}
 
 function ask {
     # ask <variable> <question> <default>, bash on macOS (3.2) can not prefill the answer
     if [ $machine == "Mac" ]
     then
-        read -p "$2 (default: $3): " -e "$1"
+        read -p "$2 (default: $3): " -e "$1" || exit 2
         [ -z "${!1}" ] && eval "$1=\$3"
     else
-        read -p "$2: " -i "$3" -e "$1"
+        read -p "$2: " -i "$3" -e "$1" || exit 2
     fi
 }
 
-while true
-do
-    ask FORWARD_PORT "Forward which port as the http entry (0 to use static directory instead)?" 8080
-    if [[ "$FORWARD_PORT" =~ ^[0-9]+$ ]] && [ "$FORWARD_PORT" -le 65535 ]
-    then
-        FORWARD_PORT=$((10#$FORWARD_PORT))
-        break
-    fi
-    echo "Please enter a port number between 1 and 65535, or 0."
-done
+if [ $ASSUME_YES == 0 ]
+then
+    need_terminal "to accept the notice" "--yes"
+    echo "===EULA=== 
+Use of this software means you ALLOW us to setup a ssh daemon and establish connection tunnel on your computer.
+If you do not agree about this, please enter ^C to exit right now!
+=========="
+    read -p "press any key to continue..." -n 1
+    echo
+fi
+
+if [ -n "$STATIC_DIRECTORY" ]
+then
+    FORWARD_PORT=0
+elif [ -n "$FORWARD_PORT" ]
+then
+    valid_port "$FORWARD_PORT" || { echo "--port needs a port number between 1 and 65535" >&2; exit 2; }
+    [ "$((10#$FORWARD_PORT))" == 0 ] && { echo "Use --dir to share a directory" >&2; exit 2; }
+else
+    need_terminal "what to share" "--port or --dir"
+    while true
+    do
+        ask FORWARD_PORT "Forward which port as the http entry (0 to use static directory instead)?" 8080
+        valid_port "$FORWARD_PORT" && break
+        echo "Please enter a port number between 1 and 65535, or 0."
+    done
+fi
+FORWARD_PORT=$((10#$FORWARD_PORT))
 
 if [ "$FORWARD_PORT" != 0 ]
 then
     STATIC_DIRECTORY="null"
+elif [ -n "$STATIC_DIRECTORY" ]
+then
+    RESOLVED="$(resolve_dir "$STATIC_DIRECTORY")" || { echo "$STATIC_DIRECTORY is not a directory" >&2; exit 2; }
+    STATIC_DIRECTORY="$RESOLVED"
 else
     while true
     do
         ask STATIC_DIRECTORY "use which static directory?" "$(pwd)"
-        # read does not expand ~
-        STATIC_DIRECTORY="${STATIC_DIRECTORY/#\~/$HOME}"
-        if [ -d "$STATIC_DIRECTORY" ]
-        then
-            STATIC_DIRECTORY="$(cd "$STATIC_DIRECTORY" && pwd)"
-            break
-        fi
+        RESOLVED="$(resolve_dir "$STATIC_DIRECTORY")" && break
         echo "$STATIC_DIRECTORY is not a directory."
     done
+    STATIC_DIRECTORY="$RESOLVED"
 fi
 
 # setup keys
@@ -308,7 +397,7 @@ fi
 function connect {
     ssh -N -M "${SSH_OPTS[@]}" -o "ClearAllForwardings yes" $TARGET_USER@$TARGET_HOST &
     sleep 5
-    ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v4: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")" || return 1
+    ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v5: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")" || return 1
     sleep 1
     ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$TUNNEL_PORT $TARGET_USER@$TARGET_HOST
 }
@@ -319,10 +408,23 @@ function tunnel_alive {
 
 RECONNECT_LOG="$WORKDIR/reconnect.log"
 
+EVER_UP=0
+# say the tunnel is up, with since when and, after an outage, for how long it was down
+function report_up {
+    if [ $EVER_UP == 0 ]
+    then
+        echo "Tunnel is up since $(date +%H:%M). Press Ctrl+C to stop."
+        EVER_UP=1
+    else
+        local down=$((SECONDS - DOWN_SINCE))
+        echo "Tunnel is up again since $(date +%H:%M), it was down for $((down / 60))m $((down % 60))s."
+    fi
+}
+
 echo "Connecting to $TARGET_HOST..."
 if connect && tunnel_alive
 then
-    echo "Tunnel is up. Press Ctrl+C to stop."
+    report_up
     CONNECTION_LOST=0
 else
     echo "Could not open the tunnel, retrying... (details in $RECONNECT_LOG)"
@@ -336,8 +438,9 @@ do
     then
         if [ $CONNECTION_LOST == 0 ]
         then
-            echo "Connection lost, reconnecting... (details in $RECONNECT_LOG)"
+            echo "Connection lost at $(date +%H:%M), reconnecting... (details in $RECONNECT_LOG)"
             CONNECTION_LOST=1
+            DOWN_SINCE=$SECONDS
         fi
         # keep the local sshd, only the connection to the gateway is replaced
         close_master
@@ -347,7 +450,7 @@ do
         } >> "$RECONNECT_LOG" 2>&1
     elif [ $CONNECTION_LOST == 1 ]
     then
-        echo "Tunnel is up. Press Ctrl+C to stop."
+        report_up
         CONNECTION_LOST=0
     fi
 

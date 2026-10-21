@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ChildProcess, execFile, execFileSync, spawn } from "child_process";
-import { mkdir, readFile, writeFile } from "fs/promises";
+import { mkdir, readFile, stat, writeFile } from "fs/promises";
 import os from "os";
 import net from "net";
 import path from "path";
@@ -27,13 +27,13 @@ const pgrep = (pattern: string, exact = false) => new Promise<number[]>((resolve
     execFile("pgrep", [exact ? "-fx" : "-f", pattern], (_err, stdout) => resolve(stdout.split("\n").filter(Boolean).map(Number)));
 });
 
-async function waitFor(check: () => Promise<boolean> | boolean, timeoutMs = 20000, what = "condition") {
+async function waitFor(check: () => Promise<boolean> | boolean, timeoutMs = 20000, what: string | (() => string) = "condition") {
     const end = Date.now() + timeoutMs;
     while (Date.now() < end) {
         if (await check()) return;
         await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    throw new Error(`timed out waiting for ${what}`);
+    throw new Error(`timed out waiting for ${typeof what === "function" ? what() : what}`);
 }
 
 describe.skipIf(!hasScript)("client script", () => {
@@ -72,14 +72,18 @@ describe.skipIf(!hasScript)("client script", () => {
         await cleanup();
     });
 
-    const workDir = (user: User) => path.join(home, ".gateway-mmis1000", user.id!);
-    const masters = (user: User) => pgrep(`ssh -N -M .*${workDir(user)}/control.sock`);
+    const workDir = (user: User) => path.join(home, ".ssh-gateway", "127.0.0.1", user.id!);
+    const scriptFileOf = (user: User) => path.join(root, `run-${user.id}.sh`);
+    const escapeRegex = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    /** the script and its watchdog subshell, with or without options, not a parent that mentions the file */
+    const scriptProcesses = (file: string) => pgrep(`^bash ${escapeRegex(file)}( |$)`);
+    const masters = (user: User, ofHome = home) => pgrep(`ssh -N -M .*${path.join(ofHome, ".ssh-gateway", `${user.id}.sock`)}`);
     const sshds = (user: User) => pgrep(`sshd -D -f ${workDir(user)}/sshd_config`);
 
     async function writeScript(user: User, options: { portRange?: [number, number] } = {}) {
         const template = await readFile(path.resolve(__dirname, "../template/script.template"), "utf8");
         const knownHosts = (await knownHostsLines(store.hostKeyDir, "127.0.0.1", sshPort)).join("\n");
-        const file = path.join(root, `run-${user.id}.sh`);
+        const file = scriptFileOf(user);
         await writeFile(file, renderClientScript(template, {
             sshHost: "127.0.0.1",
             sshPort,
@@ -133,18 +137,36 @@ describe.skipIf(!hasScript)("client script", () => {
         await answer("http entry", "Please enter a port number", options.portAnswers ?? [String(options.folder ? 0 : targetPort)]);
         if (options.folder) await answer("static directory", "is not a directory.", options.dirAnswers ?? [root]);
         if (options.noWait) return { terminal, scriptPid: 0, type, output: () => output, prompt };
-        await prompt("Tunnel is up. Press Ctrl+C to stop.");
+        await prompt("Press Ctrl+C to stop.");
         await waitFor(() => user.tunnelConnection !== null, 10000, "the tunnel");
 
-        const [scriptPid] = await pgrep(`bash ${scriptFile}`, true);
+        const [scriptPid] = await scriptProcesses(scriptFile);
         expect(scriptPid).toBeGreaterThan(0);
         return { terminal, scriptPid, type, output: () => output, prompt };
+    }
+
+    /** run the script without a terminal, stdin closed, like cron or a service would */
+    function runWithoutTerminal(scriptFile: string, args: string[], env: Record<string, string> = {}) {
+        const child = spawn("bash", [scriptFile, ...args], {
+            cwd: root,
+            env: { ...process.env, HOME: home, ...env },
+            stdio: ["ignore", "pipe", "pipe"],
+        });
+        terminals.push(child);
+        let output = "";
+        child.stdout!.on("data", (chunk) => (output += chunk));
+        child.stderr!.on("data", (chunk) => (output += chunk));
+        const exited = new Promise<number | null>((resolve) => {
+            if (child.exitCode !== null) resolve(child.exitCode);
+            child.on("exit", (code) => resolve(code));
+        });
+        return { child, output: () => output, exited };
     }
 
     async function expectStopped(user: User, scriptPid: number) {
         await waitFor(async () => {
             // the script and its watchdog subshell, not a parent script that mentions the file
-            const running = await pgrep(`bash ${path.join(root, `run-${user.id}.sh`)}`, true);
+            const running = await scriptProcesses(scriptFileOf(user));
             return running.length === 0 && (await masters(user)).length === 0 && user.tunnelConnection === null;
         }, 15000, "the script, its watchdog, its tunnel and the gateway side of it to go away");
         expect(scriptPid).toBeGreaterThan(0);
@@ -177,19 +199,131 @@ describe.skipIf(!hasScript)("client script", () => {
 
             // the gateway drops the connection, like a network outage would
             user.tunnelConnection!.end();
-            await waitFor(() => run.output().slice(before).includes("Tunnel is up. Press Ctrl+C to stop."), 30000, "the script to reconnect");
+            await waitFor(() => run.output().slice(before).includes("Tunnel is up again"), 30000, "the script to reconnect");
             await waitFor(() => user.tunnelConnection !== null, 10000, "the new tunnel");
 
             const printed = run.output().slice(before).replace(/\r/g, "").trim().split("\n");
             expect(printed).toEqual([
-                expect.stringMatching(/^Connection lost, reconnecting\.\.\. \(details in .*reconnect\.log\)$/),
-                "Tunnel is up. Press Ctrl+C to stop.",
+                expect.stringMatching(/^Connection lost at \d\d:\d\d, reconnecting\.\.\. \(details in .*reconnect\.log\)$/),
+                expect.stringMatching(/^Tunnel is up again since \d\d:\d\d, it was down for \d+m \d+s\.$/),
             ]);
             // only the connection is replaced, the local sshd keeps serving the folder
             if (folder) expect(await sshds(user)).toEqual([sshd]);
 
             run.type("\x03");
             await expectStopped(user, run.scriptPid);
+        });
+    });
+
+    describe.concurrent("options", { timeout: 60000 }, () => {
+        it("prints usage with -h and touches nothing", async () => {
+            const user = await store.create();
+            for (const flag of ["-h", "--help"]) {
+                const run = runWithoutTerminal(await writeScript(user), [flag]);
+                expect(await run.exited).toBe(0);
+                expect(run.output()).toMatch(/^Usage: run-\w+\.sh \[options\]/);
+                expect(run.output()).toContain("-p, --port PORT");
+                expect(run.output()).toContain("Opens a tunnel from 127.0.0.1 to this computer.");
+            }
+            await expect(readFile(path.join(workDir(user), "known_hosts"))).rejects.toThrow();
+        });
+
+        it.each([
+            ["no options", [], "No terminal to ask to accept the notice, use --yes (see --help)"],
+            ["only --yes", ["--yes"], "No terminal to ask what to share, use --port or --dir (see --help)"],
+            ["an unknown option", ["--verbose"], "Unknown option --verbose, see --help"],
+            ["--port without a value", ["--port"], "--port needs a port, see --help"],
+            ["both --port and --dir", ["-p", "8080", "-d", "/tmp"], "Use either --port or --dir, not both"],
+            ["a bad port", ["-y", "-p", "http"], "--port needs a port number between 1 and 65535"],
+            ["port 0", ["-y", "-p", "0"], "Use --dir to share a directory"],
+            ["a missing directory", ["-y", "-d", "/no/such/dir"], "/no/such/dir is not a directory"],
+        ])("stops with a message for %s", async (_, args, message) => {
+            const user = await store.create();
+            const run = runWithoutTerminal(await writeScript(user), args);
+            expect(await run.exited).toBe(2);
+            expect(run.output()).toContain(message);
+            expect(await masters(user)).toEqual([]);
+            expect(user.tunnelConnection).toBeNull();
+        });
+
+        it("explains when HOME is too long for the control socket", async () => {
+            const user = await store.create();
+            const longHome = path.join(root, "a-very-long-home-directory-name-".repeat(3));
+            const run = runWithoutTerminal(await writeScript(user), ["-p", String(targetPort), "-y"], { HOME: longHome });
+            expect(await run.exited).toBe(1);
+            expect(run.output()).toContain("is too long for a unix socket");
+            expect(user.tunnelConnection).toBeNull();
+        });
+
+        it("shares a port without asking", async () => {
+            const user = await store.create();
+            const scriptFile = await writeScript(user);
+            const run = runWithoutTerminal(scriptFile, ["--port", String(targetPort), "--yes"]);
+            await waitFor(() => run.output().includes("Press Ctrl+C to stop."), 30000, `the tunnel, output:\n${run.output()}`);
+            expect(run.output()).not.toContain("EULA");
+            expect(user.httpPort).toBe(targetPort);
+            process.kill(run.child.pid!, "SIGTERM");
+            await expectStopped(user, run.child.pid!);
+        });
+
+        it("shares a directory without asking, ~ expanded", async () => {
+            const user = await store.create();
+            const scriptFile = await writeScript(user);
+            const run = runWithoutTerminal(scriptFile, ["-d", "~", "-y"]);
+            await waitFor(() => run.output().includes("Press Ctrl+C to stop."), 30000, `the tunnel, output:\n${run.output()}`);
+            expect(user.httpPort).toBe(0);
+            expect(user.staticDirectory).toBe(home);
+            expect(await sshds(user)).toHaveLength(1);
+            process.kill(run.child.pid!, "SIGTERM");
+            await expectStopped(user, run.child.pid!);
+            expect(await sshds(user)).toEqual([]);
+        });
+    });
+
+    describe.concurrent("work folder", { timeout: 60000 }, () => {
+        const oldWorkDir = (user: User) => path.join(home, ".gateway-mmis1000", user.id!);
+
+        it("keeps its files private in ~/.ssh-gateway/<host>/<id>", async () => {
+            const user = await store.create();
+            const run = runWithoutTerminal(await writeScript(user), ["-p", String(targetPort), "-y"]);
+            await waitFor(() => run.output().includes("Press Ctrl+C to stop."), 30000, "the tunnel");
+            expect((await stat(workDir(user))).mode & 0o777).toBe(0o700);
+            expect((await stat(path.join(home, ".ssh-gateway"))).mode & 0o777).toBe(0o700);
+            expect(await readFile(path.join(workDir(user), "known_hosts"), "utf8")).toContain(`[127.0.0.1]:${sshPort}`);
+            process.kill(run.child.pid!, "SIGTERM");
+            await expectStopped(user, run.child.pid!);
+        });
+
+        it("moves its own folder from older scripts and leaves other tunnels alone", async () => {
+            const user = await store.create();
+            const other = path.join(home, ".gateway-mmis1000", "othertunnel");
+            await mkdir(oldWorkDir(user), { recursive: true });
+            await mkdir(other, { recursive: true });
+            await writeFile(path.join(oldWorkDir(user), "ssh_host_rsa_key"), "kept host key");
+            await writeFile(path.join(other, "id_rsa"), "another tunnel");
+
+            const run = runWithoutTerminal(await writeScript(user), ["-p", String(targetPort), "-y"]);
+            await waitFor(() => run.output().includes("Press Ctrl+C to stop."), 30000, "the tunnel");
+            expect(await readFile(path.join(workDir(user), "ssh_host_rsa_key"), "utf8")).toBe("kept host key");
+            await expect(stat(oldWorkDir(user))).rejects.toThrow();
+            // an older script of another tunnel keeps its folder, and with it the parent
+            expect(await readFile(path.join(other, "id_rsa"), "utf8")).toBe("another tunnel");
+            process.kill(run.child.pid!, "SIGTERM");
+            await expectStopped(user, run.child.pid!);
+        });
+
+        it("removes the old parent folder once it is empty", async () => {
+            // its own home, so other tests can not leave folders in the shared parent
+            const user = await store.create();
+            const ownHome = path.join(root, `home-${user.id}`);
+            await mkdir(path.join(ownHome, ".gateway-mmis1000", user.id!), { recursive: true });
+
+            const run = runWithoutTerminal(await writeScript(user), ["-p", String(targetPort), "-y"], { HOME: ownHome });
+            await waitFor(() => run.output().includes("Press Ctrl+C to stop."), 30000, () => `the tunnel, output:\n${run.output()}`);
+            await expect(stat(path.join(ownHome, ".gateway-mmis1000"))).rejects.toThrow();
+            expect((await stat(path.join(ownHome, ".ssh-gateway", "127.0.0.1", user.id!))).isDirectory()).toBe(true);
+            process.kill(run.child.pid!, "SIGTERM");
+            await waitFor(async () => (await scriptProcesses(scriptFileOf(user))).length === 0 && user.tunnelConnection === null, 15000, "the script to stop");
         });
     });
 
@@ -340,7 +474,7 @@ describe.skipIf(!hasScript)("client script", () => {
             if (folder) expect(oldSshd).toBeGreaterThan(0);
 
             // the script and its watchdog subshell share the command line
-            for (const pid of await pgrep(`bash ${scriptFile}`, true)) process.kill(pid, "SIGKILL");
+            for (const pid of await scriptProcesses(scriptFile)) process.kill(pid, "SIGKILL");
             first.terminal.kill("SIGKILL");
             await new Promise((resolve) => setTimeout(resolve, 3000));
             expect(await masters(user)).toContain(oldMaster);

@@ -46,8 +46,10 @@ function killConnection(client: Connection) {
  * 3: cleans up on ctrl+\ and on hangup, never kills its parent, a watchdog cleans up
  *    after kill -9, and the next start removes what a killed run left
  * 4: quiet while the tunnel is fine, reports only when the connection is lost and back
+ * 5: --port/--dir/--yes/--help options, files in ~/.ssh-gateway/<host>/<id>, works without
+ *    netstat and with spaces in paths, refuses to run twice
  */
-export const CLIENT_SCRIPT_VERSION = 4
+export const CLIENT_SCRIPT_VERSION = 5
 const VERSION_HEADER = /^v(\d+):$/
 
 export function createSshServer(config: Config, store: UserStore, hostKeys: Buffer[], options: SshServerOptions = {}) {

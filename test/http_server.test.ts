@@ -108,7 +108,7 @@ describe("http server", () => {
             expect(setup.body).toContain('-a -x -o "IdentitiesOnly yes"');
             expect(setup.body).toContain('-o "StrictHostKeyChecking yes"');
             expect(setup.body).not.toContain("StrictHostKeyChecking no");
-            expect(setup.body).toContain('"v4: register');
+            expect(setup.body).toContain('"v5: register');
             expect(setup.body).toContain("ForceCommand internal-sftp -R");
             expect(setup.body).toContain("PermitOpen localhost:* 127.0.0.1:*");
 

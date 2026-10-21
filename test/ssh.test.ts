@@ -350,6 +350,7 @@ describe("ssh server", () => {
             ["v1", `v1: register ${LOCAL_USER} 8080`],
             ["v2", `v2: register ${LOCAL_USER} 8080`],
             ["v3", `v3: register ${LOCAL_USER} 8080`],
+            ["v4", `v4: register ${LOCAL_USER} 8080`],
         ])("asks %s scripts to update and still accepts them", async (_, command) => {
             const res = await session.exec(command);
             expect(res.stdout).toMatch(/^Please update this script, a newer version with fixes is available:\n/);
