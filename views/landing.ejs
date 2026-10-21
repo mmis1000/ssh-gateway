@@ -239,7 +239,7 @@ Inspect requests at <span class="link"><%= setupOrigin %>/app/#…</span></pre>
         </div>
         <ul class="flow-notes">
           <li><strong>Outgoing only.</strong> Your computer connects out to port <%= sshPort %>, so it works behind NAT and firewalls without opening ports.</li>
-          <li><strong>Your keys.</strong> The script carries a key made for you. Folder mode runs a private <code>sshd</code> that only accepts this gateway.</li>
+          <li><strong>Limited access.</strong> The script carries a key made for you and only trusts this gateway's host keys. Folder mode runs a private <code>sshd</code> that lets the gateway read files and nothing else. It can read outside the folder too, so share folders from a machine where that is fine.</li>
           <li><strong>Stays up.</strong> The script checks the tunnel and reconnects on its own when the network drops.</li>
         </ul>
       </div>

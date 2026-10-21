@@ -1,7 +1,7 @@
 import http from "http";
 import os from "os";
 import path from "path";
-import { mkdir, mkdtemp, rm, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "fs/promises";
 import net, { AddressInfo } from "net";
 import WebSocket from "ws";
 import { utils } from "ssh2";
@@ -236,4 +236,20 @@ export function socks5Connect(port: number, username: string, password: string, 
 /** open a store that has no legacy data to migrate */
 export function openTestStore(saveDir: string) {
     return openStore(saveDir, path.join(saveDir, "..", "no-legacy-host-keys"), () => {});
+}
+
+/**
+ * The sshd_config run.sh writes for folder mode, taken from the real template so tests run
+ * the config users get. StrictModes is relaxed because tests live in the system temp dir.
+ */
+export async function clientSshdConfig(vars: { LISTEN_PORT: number; WORKDIR: string; CURRENT_USER: string }) {
+    const template = await readFile(path.resolve(__dirname, "../template/script.template"), "utf8");
+    const match = /export SSHD_CONFIG_TEMPLETE="\n([\s\S]*?)\n"/.exec(template);
+    if (!match) throw new Error("sshd config not found in template");
+    const values: Record<string, string> = { ...vars, LISTEN_PORT: String(vars.LISTEN_PORT) };
+    const config = match[1].replace(/\$(\w+)/g, (whole, name) => {
+        if (!(name in values)) throw new Error(`unknown variable ${whole} in sshd config`);
+        return values[name];
+    });
+    return `${config}\nStrictModes no\n`;
 }

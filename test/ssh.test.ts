@@ -9,19 +9,18 @@ import { readdirSync } from "fs";
 import { BaseAgent, Client, ParsedKey, utils } from "ssh2";
 import WebSocket, { WebSocketServer } from "ws";
 import { createHttpServer } from "../src/http_server";
-import { createSshServer, SshServerOptions } from "../src/ssh_server";
+import { CLIENT_SCRIPT_VERSION, createSshServer, SshServerOptions } from "../src/ssh_server";
 import { createSocksServer } from "../src/socks5_server";
 import { User } from "../src/user";
-import { loadHostKeys } from "../src/keys";
+import { knownHostsLines, loadHostKeys } from "../src/keys";
 import { openStore } from "../src/migrate";
 import { UserStore } from "../src/store";
-import { close, createConfig, createTempDir, HTTP_HOST, isEntry, listen, openInspector, request, socks5Connect, V1User, writeV1Fixture } from "./helpers";
+import { clientSshdConfig, close, createConfig, createTempDir, HTTP_HOST, isEntry, listen, openInspector, request, socks5Connect, V1User, writeV1Fixture } from "./helpers";
 
 // Drives the gateway with the real OpenSSH client the same way template/script.template does:
 // a ControlMaster connection, a "v1: register" exec and a "-O forward -R 22:localhost:<port>" reverse tunnel.
 
 const SSHD_PATH = "/usr/sbin/sshd";
-const SFTP_SERVER_PATH = "/usr/lib/openssh/sftp-server";
 const LOCAL_USER = os.userInfo().username;
 
 interface ExecResult {
@@ -181,7 +180,7 @@ class ClientSession {
     }
 
     register(port: number, staticDirectory?: string) {
-        const args = ["v1:", "register", LOCAL_USER, String(port)];
+        const args = [`v${CLIENT_SCRIPT_VERSION}:`, "register", LOCAL_USER, String(port)];
         if (staticDirectory) args.push(staticDirectory);
         return this.exec(args.map((arg) => `'${arg}'`).join(" "));
     }
@@ -293,6 +292,30 @@ describe("ssh server", () => {
             expect(await loginWithForgedSignature(gateway, user)).toBe("client-authentication");
         });
 
+        it("is only trusted with the host keys handed out in the script", async () => {
+            const session = await ClientSession.create(gateway, user);
+            const strict = (knownHosts: string) => run("ssh", [
+                "-F", "/dev/null", "-i", session.identity, "-p", String(gateway.sshPort),
+                "-o", "IdentitiesOnly yes", "-o", "BatchMode yes", "-o", "LogLevel ERROR",
+                "-o", "StrictHostKeyChecking yes", "-o", `UserKnownHostsFile ${knownHosts}`,
+                `${user.id}@127.0.0.1`, "true",
+            ]);
+
+            const pinned = path.join(session.workDir, "known_hosts");
+            await writeFile(pinned, (await knownHostsLines(gateway.store.hostKeyDir, "127.0.0.1", gateway.sshPort)).join("\n") + "\n");
+            const trusted = await strict(pinned);
+            expect(trusted.stderr).not.toContain("Host key verification failed");
+            expect(trusted.stderr).toContain("bad register command");
+
+            // someone else answering on the gateway address
+            const impostor = path.join(session.workDir, "known_hosts_other");
+            const other = utils.generateKeyPairSync("ed25519");
+            await writeFile(impostor, `[127.0.0.1]:${gateway.sshPort} ${other.public}\n`);
+            const refused = await strict(impostor);
+            expect(refused.code).toBe(255);
+            expect(refused.stderr).toContain("Host key verification failed");
+        });
+
         it("rejects unknown users", async () => {
             const session = await ClientSession.create(gateway, user);
             const args = session.args();
@@ -312,19 +335,24 @@ describe("ssh server", () => {
             session = await ClientSession.create(gateway, user);
         });
 
-        it("accepts a v1 forward registration", async () => {
+        it("accepts a forward registration from the current script", async () => {
             const res = await session.register(8080);
-            expect(res.stdout).toContain("Client accepted.");
-            expect(res.stdout).not.toContain("Please update client");
+            expect(res.stdout).toMatch(/^Client accepted\./);
+            expect(res.stdout).not.toContain("Please update");
             expect(res.stdout).toContain(`Forward server is opened at http://${user.domainName}.${HTTP_HOST}:80/`);
             expect(res.stdout).toContain(`socks5://${user.id}:${user.password}@`);
             expect(user.httpPort).toBe(8080);
             expect(user.remoteUser).toBe(LOCAL_USER);
         });
 
-        it("asks v0 clients to update", async () => {
-            const res = await session.exec(`register ${LOCAL_USER} 8080`);
-            expect(res.stdout).toMatch(/^Please update client!!!\nClient accepted\./);
+        it.each([
+            ["v0 (no header)", `register ${LOCAL_USER} 8080`],
+            ["v1", `v1: register ${LOCAL_USER} 8080`],
+        ])("asks %s scripts to update and still accepts them", async (_, command) => {
+            const res = await session.exec(command);
+            expect(res.stdout).toMatch(/^Please update this script, a newer version with security fixes is available:\n/);
+            expect(res.stdout).toContain(`curl -u '${user.id}:${user.password}' http://gateway.test/update > run.sh`);
+            expect(res.stdout).toContain("Client accepted.");
         });
 
         it("normalizes the static directory", async () => {
@@ -669,6 +697,7 @@ describe("ssh server", () => {
         let user: User;
         let session: ClientSession;
         let sshd: ChildProcess;
+        let sshdPort: number;
         let root: string;
         let www: string;
         const host = () => `${user.domainName}.${HTTP_HOST}`;
@@ -691,29 +720,18 @@ describe("ssh server", () => {
             await symlink(path.join(root, "secret.txt"), path.join(www, "link-outside"));
             await writeFile(path.join(root, "secret.txt"), "top secret");
 
-            // a client side sshd like run.sh starts
-            const sshdPort = await freePort();
+            // the client side sshd exactly as run.sh configures it
+            sshdPort = await freePort();
             const sshdDir = path.join(session.workDir, "sshd");
             await mkdir(sshdDir);
-            await keygen(path.join(sshdDir, "ssh_host_ed25519_key"));
+            for (const type of ["rsa", "ecdsa", "ed25519"]) await keygen(path.join(sshdDir, `ssh_host_${type}_key`), type);
             await writeFile(path.join(sshdDir, "authorized_keys"), user.gatewayKeyPub!);
             await chmod(path.join(sshdDir, "authorized_keys"), 0o600);
-            await writeFile(path.join(sshdDir, "sshd_config"), [
-                `Port ${sshdPort}`,
-                "ListenAddress 127.0.0.1",
-                `HostKey ${path.join(sshdDir, "ssh_host_ed25519_key")}`,
-                `AllowUsers ${LOCAL_USER}`,
-                "PermitRootLogin no",
-                `AuthorizedKeysFile ${path.join(sshdDir, "authorized_keys")}`,
-                `PidFile ${path.join(sshdDir, "sshd.pid")}`,
-                "PasswordAuthentication no",
-                "KbdInteractiveAuthentication no",
-                "UsePAM no",
-                // the test directory lives under the system temp dir
-                "StrictModes no",
-                `Subsystem sftp ${SFTP_SERVER_PATH}`,
-                "",
-            ].join("\n"));
+            await writeFile(path.join(sshdDir, "sshd_config"), await clientSshdConfig({
+                LISTEN_PORT: sshdPort,
+                WORKDIR: sshdDir,
+                CURRENT_USER: LOCAL_USER,
+            }));
             sshd = spawn(SSHD_PATH, ["-D", "-e", "-f", path.join(sshdDir, "sshd_config")], { stdio: "ignore" });
             await waitFor(() => new Promise<true | undefined>((resolve) => {
                 const socket = net.connect(sshdPort, "127.0.0.1", () => {
@@ -856,6 +874,85 @@ describe("ssh server", () => {
                     open = await echoConnections();
                 }
                 expect(open).toBe(0);
+            });
+        });
+
+        describe("client sshd", () => {
+            // what the gateway can do with its key on the user's machine, using the real run.sh config
+            let gatewayKeyFile: string;
+            const asGateway = (extra: string[], command?: string) => run("ssh", [
+                "-F", "/dev/null", "-i", gatewayKeyFile, "-p", String(sshdPort),
+                "-o", "IdentitiesOnly yes", "-o", "BatchMode yes",
+                "-o", "StrictHostKeyChecking no", "-o", "UserKnownHostsFile /dev/null", "-o", "LogLevel ERROR",
+                ...extra, `${LOCAL_USER}@127.0.0.1`, ...(command ? [command] : []),
+            ]);
+            const sftp = (commands: string) => new Promise<ExecResult>((resolve) => {
+                const child = execFile("sftp", [
+                    "-F", "/dev/null", "-i", gatewayKeyFile, "-P", String(sshdPort), "-b", "-",
+                    "-o", "IdentitiesOnly yes", "-o", "BatchMode yes",
+                    "-o", "StrictHostKeyChecking no", "-o", "UserKnownHostsFile /dev/null", "-o", "LogLevel ERROR",
+                    `${LOCAL_USER}@127.0.0.1`,
+                ], { timeout: 15000 }, (err, stdout, stderr) => resolve({ code: err ? (typeof err.code === "number" ? err.code : -1) : 0, stdout, stderr }));
+                child.stdin!.end(commands);
+            });
+
+            beforeAll(async () => {
+                gatewayKeyFile = path.join(session.workDir, "gateway_key");
+                await writeFile(gatewayKeyFile, user.gatewayKey!, { mode: 0o600 });
+            });
+
+            it("reads the shared folder", async () => {
+                const target = path.join(session.workDir, "fetched.html");
+                const res = await sftp(`get "${path.join(www, "index.html")}" "${target}"\n`);
+                expect(res.code).toBe(0);
+                expect(await readFile(target, "utf8")).toBe("<h1>hello</h1>");
+            });
+
+            it("cannot run commands or get a terminal", async () => {
+                const command = await asGateway([], "echo EXECUTED");
+                expect(command.stdout).not.toContain("EXECUTED");
+                expect(command.stdout + command.stderr).toContain("This service allows sftp connections only");
+
+                const terminal = await asGateway(["-tt"], "echo EXECUTED");
+                expect(terminal.stdout).not.toContain("EXECUTED");
+            });
+
+            it("cannot write files", async () => {
+                const source = path.join(session.workDir, "planted.src");
+                await writeFile(source, "planted");
+                const res = await sftp(`put "${source}" "${path.join(www, "planted.txt")}"\n`);
+                expect(res.code).not.toBe(0);
+                await expect(readFile(path.join(www, "planted.txt"), "utf8")).rejects.toThrow();
+            });
+
+            it("only reaches local ports, and cannot listen on the user's machine", async () => {
+                // the same channel the gateway opens for socks, straight against the client sshd
+                const client = new Client();
+                await new Promise<void>((resolve, reject) => {
+                    client.on("ready", () => resolve());
+                    client.on("error", reject);
+                    client.connect({ host: "127.0.0.1", port: sshdPort, username: LOCAL_USER, privateKey: user.gatewayKey! });
+                });
+                const open = (host: string, port: number) => new Promise<string>((resolve) => {
+                    client.forwardOut("127.0.0.1", 0, host, port, (err, channel) => {
+                        if (err) return resolve(`refused: ${err.message}`);
+                        channel.destroy();
+                        resolve("opened");
+                    });
+                });
+                const listen = () => new Promise<string>((resolve) => {
+                    client.forwardIn("127.0.0.1", 0, (err) => resolve(err ? `refused: ${err.message}` : "listening"));
+                });
+
+                try {
+                    expect(await open("localhost", sshdPort)).toBe("opened");
+                    expect(await open("127.0.0.1", sshdPort)).toBe("opened");
+                    expect(await open("127.0.0.2", sshdPort)).toMatch(/^refused/);
+                    expect(await open("example.com", 80)).toMatch(/^refused/);
+                    expect(await listen()).toMatch(/^refused/);
+                } finally {
+                    client.end();
+                }
             });
         });
 

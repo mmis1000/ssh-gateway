@@ -50,3 +50,12 @@ chmod 755 run.sh
 
 And then... *Magic*  
 It created everything required to enable port forwarding and authentication for you
+
+### What the gateway can access
+
+- Port mode: only the port you forward.
+- Folder mode: the script runs an `sshd` as you on a random local port. The gateway can read files over SFTP
+  and connect to local ports (for the SOCKS5 tunnel), nothing else: no commands, no writes, no other hosts.
+  Confining it to the shared folder would need `sshd` to run as root, so the gateway can read any file you can.
+- The script never forwards your ssh agent or X11, offers only the key made for it, and refuses to connect
+  when the gateway's host key does not match the one it was created with.

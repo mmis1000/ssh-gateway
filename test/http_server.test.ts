@@ -6,6 +6,7 @@ import path from "path";
 import type { Express } from "express";
 import ssh2_streams from "ssh2-streams";
 import { createHttpServer } from "../src/http_server";
+import { loadHostKeys } from "../src/keys";
 import WebSocket from "ws";
 import { close, createConfig, createTempDir, HTTP_HOST, listen, openInspector, openTestStore, request, SETUP_HOST } from "./helpers";
 
@@ -19,13 +20,17 @@ describe("http server", () => {
     let server: http.Server;
     let port: number;
     let saveDir: string;
+    let hostKeyDir: string;
     let cleanup: () => Promise<void>;
 
     beforeAll(async () => {
         const temp = await createTempDir();
         cleanup = temp.cleanup;
         saveDir = path.join(temp.dir, "save");
-        ({ router, server } = await createHttpServer(createConfig(saveDir), await openTestStore(saveDir)));
+        const store = await openTestStore(saveDir);
+        await loadHostKeys(store.hostKeyDir, () => {});
+        hostKeyDir = store.hostKeyDir;
+        ({ router, server } = await createHttpServer(createConfig(saveDir), store));
         port = await listen(server);
     });
 
@@ -94,6 +99,18 @@ describe("http server", () => {
             expect(setup.headers["content-type"]).toMatch(/^application\/x-sh/);
             expect(setup.body).toMatch(/^#! \/bin\/bash/);
             expect(setup.body).not.toMatch(/\*[A-Z_]+\*/);
+
+            // hardened client: pinned host keys, no agent or X11 forwarding, only the issued key
+            for (const type of ["rsa", "ecdsa", "ed25519"]) {
+                const [keyType, key] = (await readFile(path.join(hostKeyDir, `ssh_host_${type}_key.pub`), "utf8")).split(" ");
+                expect(setup.body).toContain(`[${SETUP_HOST}]:2222 ${keyType} ${key}`);
+            }
+            expect(setup.body).toContain('-a -x -o "IdentitiesOnly yes"');
+            expect(setup.body).toContain('-o "StrictHostKeyChecking yes"');
+            expect(setup.body).not.toContain("StrictHostKeyChecking no");
+            expect(setup.body).toContain('"v2: register');
+            expect(setup.body).toContain("ForceCommand internal-sftp -R");
+            expect(setup.body).toContain("PermitOpen localhost:* 127.0.0.1:*");
 
             const userIds = (await readdir(path.join(saveDir, "users"))).filter((name) => !name.startsWith("."));
             expect(userIds).toHaveLength(1);

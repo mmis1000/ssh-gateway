@@ -8,6 +8,7 @@ import buffersEqual from 'buffer-equal-constant-time';
 import ssh2, { Connection } from 'ssh2';
 import { Protocol, User } from "./user"
 import { UserStore } from "./store"
+import { formatOrigin } from "./utils"
 import { AddressInfo } from "net";
 const utils = ssh2.utils;
 
@@ -36,7 +37,15 @@ function killConnection(client: Connection) {
     }
 }
 
-const V1_HEADER = 'v1:'
+/**
+ * Version of template/script.template, sent as "v<n>:" before the register command.
+ * Older scripts keep working but are asked to update.
+ * 1: protocol v1, the gateway connects through the reverse forward directly
+ * 2: hardened client sshd (sftp read only, local ports only), pinned host keys,
+ *    no agent or X11 forwarding, only the issued key is offered
+ */
+export const CLIENT_SCRIPT_VERSION = 2
+const VERSION_HEADER = /^v(\d+):$/
 
 export function createSshServer(config: Config, store: UserStore, hostKeys: Buffer[], options: SshServerOptions = {}) {
     return new ssh2.Server({
@@ -142,12 +151,10 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                     let temp = parse(info.command).map(i => String(i));
                     let stream = accept();
                     
-                    if (temp[0] == V1_HEADER) {
-                        temp.shift()
-                        client.userData!.protocolVersion = Protocol.V1
-                    } else {
-                        client.userData!.protocolVersion = Protocol.V0
-                    }
+                    const header = VERSION_HEADER.exec(temp[0] ?? '')
+                    const scriptVersion = header ? Number(header[1]) : 0
+                    if (header) temp.shift()
+                    client.userData!.protocolVersion = scriptVersion >= 1 ? Protocol.V1 : Protocol.V0
 
                     if ((temp.length !== 3 && temp.length !== 4) || temp[0] !== 'register' || !temp[2].match(/^[1-9]\d*$|^0$/)) {
                         console.log(`${client.userData!.id}: [SSH] bad register command: ${inspect(info.command)}`);
@@ -162,7 +169,13 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                             client.userData!.staticDirectory = path.resolve('/', temp[3])
                         }
 
-                        stream.write(`${client.userData!.protocolVersion === Protocol.V0 ? 'Please update client!!!\n' : ''}Client accepted.
+                        const userData = client.userData!
+                        const updateNotice = scriptVersion < CLIENT_SCRIPT_VERSION
+                            ? `Please update this script, a newer version with security fixes is available:
+  curl -u '${userData.id}:${userData.password}' ${formatOrigin(config.setupProtocol, config.setupHost, config.setupPort)}/update > run.sh
+`
+                            : ''
+                        stream.write(`${updateNotice}Client accepted.
 Forward server is opened at ${config.httpProtocol}://${client.userData!.domainName}.${config.httpHost}:${config.httpPort}/
 Socks v5 tunnel is opened at socks5://${client.userData!.id}:${client.userData!.password}@${config.socksHost}:${config.socksPort}
 To get new version of current script, fetch it from ${config.setupProtocol}://${client.userData!.id}:${client.userData!.password}@${config.setupHost}:${config.setupPort}/update

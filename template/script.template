@@ -33,6 +33,8 @@ export TARGET_HOST="*TARGET_HOST*"
 
 export CLIENT_PRIVATE_KEY="*CLIENT_PRIVATE_KEY*"
 export CLIENT_SERVER_KEY="*CLIENT_SERVER_KEY*"
+# host keys of the gateway, so nobody else can pretend to be it
+export KNOWN_HOSTS="*KNOWN_HOSTS*"
 
 export LISTEN_PORT="$(get_unused_port)"
 
@@ -41,22 +43,19 @@ export CONTROL_SOCK="$WORKDIR/control.sock"
 
 mkdir -p "$WORKDIR"
 
-SFTP_BIN=`cat /etc/ssh/sshd_config | grep $'^Subsystem\t* *sftp' | awk '{print $3}'`
-if [ ! "$SFTP_BIN" ]
-then
-    if [ -f '/usr/lib/openssh/sftp-server' ]
-    then
-        SFTP_BIN='/usr/lib/openssh/sftp-server'
-    elif [ -f '/usr/lib/ssh/sftp-server' ]
-    then
-        SFTP_BIN='/usr/lib/ssh/sftp-server'
-    elif [ -f '/usr/libexec/sftp-server' ]
-    then
-        SFTP_BIN='/usr/libexec/sftp-server'
-    else
-        SFTP_BIN='internal-sftp'
-    fi
-fi
+printf '%s\n' "$KNOWN_HOSTS" > "$WORKDIR/known_hosts"
+
+# options for every connection to the gateway:
+# -a -x       never forward the ssh agent or X11 to the gateway, whatever ~/.ssh/config says
+# IdentitiesOnly  offer only the key made for this script, not every key in the agent
+# known_hosts     only talk to the gateway whose host keys came with this script
+SSH_OPTS=(
+    -i "$WORKDIR/id_rsa" -p "$TARGET_PORT"
+    -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"
+    -a -x -o "IdentitiesOnly yes"
+    -o "UserKnownHostsFile \"$WORKDIR/known_hosts\"" -o "StrictHostKeyChecking yes"
+    -o "ServerAliveInterval 15"
+)
 
 # template
 export SSHD_CONFIG_TEMPLETE="
@@ -79,8 +78,20 @@ ChallengeResponseAuthentication no
 UsePAM no
 PrintMotd no
 AcceptEnv LANG LC_*
-Subsystem	sftp	$SFTP_BIN
 ClientAliveInterval 120
+
+# the gateway only needs to read files and to reach local ports for socks
+ForceCommand internal-sftp -R
+Subsystem sftp internal-sftp -R
+AllowTcpForwarding local
+PermitOpen localhost:* 127.0.0.1:*
+AllowAgentForwarding no
+AllowStreamLocalForwarding no
+X11Forwarding no
+PermitTTY no
+PermitTunnel no
+GatewayPorts no
+PermitUserRC no
 "
 
 if [ ! "$(which ssh)" ]
@@ -109,12 +120,12 @@ then
 fi
 
 function finish_no_exit {
-  ssh -N -O exit    -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                             $TARGET_USER@$TARGET_HOST  >/dev/null 2>&1
+  ssh -N -O exit "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST >/dev/null 2>&1
   rm -f "$CONTROL_SOCK" >/dev/null 2>&1
 }
 
 function finish {
-  ssh -N -O exit    -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no"                             $TARGET_USER@$TARGET_HOST  >/dev/null 2>&1
+  ssh -N -O exit "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST >/dev/null 2>&1
   rm -f "$CONTROL_SOCK" >/dev/null 2>&1
   echo Exited!;
   kill 0
@@ -181,45 +192,45 @@ then
     "${SSHD_PATH}" -D -f $WORKDIR/sshd_config -p $LISTEN_PORT -e >> "$WORKDIR/sshd.log" 2>> "$WORKDIR/sshd.err" &
 fi
 
-ssh -N            -i "$WORKDIR/id_rsa" -p $TARGET_PORT    -M -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no" -o "ServerAliveInterval 15"                             $TARGET_USER@$TARGET_HOST& # spawn the master
+ssh -N -M "${SSH_OPTS[@]}" -o "ClearAllForwardings yes" $TARGET_USER@$TARGET_HOST & # spawn the master
 sleep 5
 echo 'preparing to register client...'
-ssh               -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no" -o "ServerAliveInterval 15"                              $TARGET_USER@$TARGET_HOST "v1: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")" # add forward 
+ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v2: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
 sleep 1
 echo 'starting to forward connection'
 
 if [ "$FORWARD_PORT" == 0 ]
 then
-    ssh -N -O forward -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no" -o "ServerAliveInterval 15" -R 22:localhost:$LISTEN_PORT $TARGET_USER@$TARGET_HOST  # add forward 
+    ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$LISTEN_PORT $TARGET_USER@$TARGET_HOST
 else
-    ssh -N -O forward -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no" -o "ServerAliveInterval 15" -R 22:localhost:$FORWARD_PORT $TARGET_USER@$TARGET_HOST  # add forward 
+    ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$FORWARD_PORT $TARGET_USER@$TARGET_HOST
 fi
 
 # check ssh connectivity
 while true
 do
     echo 'starting to check alive'
-    ssh -O check -N -p $TARGET_PORT   -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" -o "ServerAliveInterval 15" $TARGET_USER@$TARGET_HOST
+    ssh -O check -N "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST
     LAST_STATUS=$?
     echo '---------------'
     echo $LAST_STATUS
     if [ $LAST_STATUS != 0 ]
     then
         echo 'connection dead... respawning'
-        ssh -N -O exit    -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" -o "ServerAliveInterval 15"                             $TARGET_USER@$TARGET_HOST  # add forward 
+        ssh -N -O exit "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST
         rm -f "$CONTROL_SOCK"
         
-        ssh -N            -i "$WORKDIR/id_rsa" -p $TARGET_PORT    -M -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o "ClearAllForwardings yes" -o "StrictHostKeyChecking no" -o "ServerAliveInterval 15"                              $TARGET_USER@$TARGET_HOST& # spawn the master
+        ssh -N -M "${SSH_OPTS[@]}" -o "ClearAllForwardings yes" $TARGET_USER@$TARGET_HOST & # spawn the master
         sleep 5
         echo 'preparing to register client...'
-        ssh               -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto"                              -o "StrictHostKeyChecking no" -o "ServerAliveInterval 15"                              $TARGET_USER@$TARGET_HOST "v1: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")" # add forward 
+        ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v2: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
         sleep 1
         echo 'starting to forward connection'
         if [ "$FORWARD_PORT" == 0 ]
         then
-            ssh -N -O forward -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no" -o "ServerAliveInterval 15" -R 22:localhost:$LISTEN_PORT $TARGET_USER@$TARGET_HOST  # add forward 
+            ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$LISTEN_PORT $TARGET_USER@$TARGET_HOST
         else
-            ssh -N -O forward -i "$WORKDIR/id_rsa" -p $TARGET_PORT       -S "$CONTROL_SOCK" -o "ControlPersist yes" -o "ControlMaster auto" -o                              "StrictHostKeyChecking no" -o "ServerAliveInterval 15" -R 22:localhost:$FORWARD_PORT $TARGET_USER@$TARGET_HOST  # add forward 
+            ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$FORWARD_PORT $TARGET_USER@$TARGET_HOST
         fi
     fi
     

@@ -18,6 +18,7 @@ import { AddressInfo } from "net";
 import { Duplex, pipeline } from "stream";
 import { WsManager } from "./ws_manager";
 import { Inspector } from "./inspector";
+import { knownHostsLines } from "./keys";
 
 /** websocket close code for failed inspector login, the app does not retry on it */
 const WS_AUTH_FAILED = 4001
@@ -485,6 +486,8 @@ Disallow: /
     })
 
     const templatePromise = fs.readFile(path.join(__dirname, '../template/script.template'), 'utf8')
+    // read on each request, host keys are generated on the first start
+    const knownHostsPromise = () => knownHostsLines(store.hostKeyDir, config.sshHost, config.sshPort).then(lines => lines.join('\n'))
 
     router.post('/setup', function(req, res, next) {
         let domain = req.hostname;
@@ -519,9 +522,9 @@ Disallow: /
 
         store.create()
             .then(function(userData) {
-                return Promise.all([userData, templatePromise])
+                return Promise.all([userData, templatePromise, knownHostsPromise()])
             })
-            .then(function([userData, template]) {
+            .then(function([userData, template, knownHosts]) {
                 res.set('Content-Type', 'application/x-sh');
 
                 res.end(render(template, {
@@ -532,6 +535,7 @@ Disallow: /
                     CLIENT_SERVER_KEY: userData.gatewayKeyPub!,
                     LISTEN_PORT_LOW: config.userListenPortLow,
                     LISTEN_PORT_HIGH: config.userListenPortHigh,
+                    KNOWN_HOSTS: knownHosts,
                 }))
             })
             .catch(function(err) {
@@ -570,9 +574,9 @@ Disallow: /
             return userData
         })
         .then(function(userData) {
-            return Promise.all([userData, templatePromise])
+            return Promise.all([userData, templatePromise, knownHostsPromise()])
         })
-        .then(function([userData, template]) {
+        .then(function([userData, template, knownHosts]) {
             res.set('Content-Type', 'application/x-sh');
 
             res.end(render(template, {
@@ -583,6 +587,7 @@ Disallow: /
                 CLIENT_SERVER_KEY: userData.gatewayKeyPub!,
                 LISTEN_PORT_LOW: config.userListenPortLow,
                 LISTEN_PORT_HIGH: config.userListenPortHigh,
+                KNOWN_HOSTS: knownHosts,
             }))
         })
         .catch((err) => {

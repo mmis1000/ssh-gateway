@@ -62,6 +62,21 @@ export const HOST_KEY_TYPES: KeyType[] = ['rsa', 'ecdsa', 'ed25519']
 
 export const hostKeyFileName = (type: KeyType) => `ssh_host_${type}_key`
 
+/** known_hosts lines for the host keys in `dir`, for clients connecting to host:port */
+export async function knownHostsLines(dir: string, host: string, port: number) {
+    const name = Number(port) === 22 ? host : `[${host}]:${port}`
+    const lines: string[] = []
+    for (const type of HOST_KEY_TYPES) {
+        try {
+            const [keyType, key] = (await readFile(path.join(dir, `${hostKeyFileName(type)}.pub`), 'utf8')).trim().split(/\s+/)
+            lines.push(`${name} ${keyType} ${key}`)
+        } catch (err: any) {
+            if (err.code !== 'ENOENT') throw err
+        }
+    }
+    return lines
+}
+
 /** read the host keys from `dir`, generating the ones that are missing */
 export async function loadHostKeys(dir: string, log: (msg: string) => void = console.log) {
     await mkdir(dir, { recursive: true, mode: 0o700 })
