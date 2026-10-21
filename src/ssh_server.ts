@@ -149,7 +149,8 @@ To get new version of current script, fetch it from ${config.setupProtocol}://${
             client.on('request', function(accept, reject, name, info) {
                 console.log(`${client.userData!.id}: [SSH] Client requested ${name} ${inspect(info)}`);
                 // reject();
-                if (name !== 'tcpip-forward' && name !== 'cancel-tcpip-forward') reject!();
+                if (name !== 'tcpip-forward' && name !== 'cancel-tcpip-forward') reject?.();
+                else accept?.();
 
                 clearTimeout(timeoutKiller)
 
