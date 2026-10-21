@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ChildProcess, execFile, execFileSync, spawn } from "child_process";
-import { readFile, writeFile } from "fs/promises";
+import { mkdir, readFile, writeFile } from "fs/promises";
+import os from "os";
 import net from "net";
 import path from "path";
 import { renderClientScript } from "../src/http_server";
@@ -48,7 +49,8 @@ describe.skipIf(!hasScript)("client script", () => {
 
     beforeAll(async () => {
         ({ dir: root, cleanup } = await createTempDir());
-        home = path.join(root, "home");
+        // a space in the home directory exercises the quoting in the script
+        home = path.join(root, "fake home");
         const saveDir = path.join(root, "save");
         store = await openTestStore(saveDir);
         const hostKeys = await loadHostKeys(store.hostKeyDir, () => {});
@@ -74,26 +76,38 @@ describe.skipIf(!hasScript)("client script", () => {
     const masters = (user: User) => pgrep(`ssh -N -M .*${workDir(user)}/control.sock`);
     const sshds = (user: User) => pgrep(`sshd -D -f ${workDir(user)}/sshd_config`);
 
-    async function writeScript(user: User) {
+    async function writeScript(user: User, options: { portRange?: [number, number] } = {}) {
         const template = await readFile(path.resolve(__dirname, "../template/script.template"), "utf8");
         const knownHosts = (await knownHostsLines(store.hostKeyDir, "127.0.0.1", sshPort)).join("\n");
         const file = path.join(root, `run-${user.id}.sh`);
         await writeFile(file, renderClientScript(template, {
             sshHost: "127.0.0.1",
             sshPort,
-            userListenPortLow: 30020,
-            userListenPortHigh: 30099,
+            userListenPortLow: options.portRange?.[0] ?? 30020,
+            userListenPortHigh: options.portRange?.[1] ?? 30099,
         }, user, knownHosts));
         return file;
     }
 
+    interface StartOptions {
+        folder?: boolean;
+        command?: string;
+        env?: Record<string, string | undefined>;
+        /** answers to the port question, the last one must be valid */
+        portAnswers?: string[];
+        /** answers to the directory question in folder mode, the last one must be valid */
+        dirAnswers?: string[];
+        /** resolve after the answers instead of waiting for the tunnel */
+        noWait?: boolean;
+    }
+
     /** start run.sh in a terminal and answer its questions, resolves once the tunnel is up */
-    async function start(user: User, scriptFile: string, options: { folder?: boolean; command?: string } = {}) {
-        const command = options.command ?? `bash ${scriptFile}`;
+    async function start(user: User, scriptFile: string, options: StartOptions = {}) {
+        const command = options.command ?? `bash '${scriptFile}'`;
         // a new pty has no size, the line editor of the port question would scroll it sideways
         const terminal = spawn("script", ["-qfec", `stty cols 200 rows 50; ${command}`, "/dev/null"], {
             cwd: root,
-            env: { ...process.env, HOME: home },
+            env: { ...process.env, HOME: home, ...options.env },
             stdio: ["pipe", "pipe", "pipe"],
         });
         terminals.push(terminal);
@@ -101,23 +115,30 @@ describe.skipIf(!hasScript)("client script", () => {
         terminal.stdout!.on("data", (chunk) => (output += chunk));
         terminal.stderr!.on("data", (chunk) => (output += chunk));
         const type = (text: string) => terminal.stdin!.write(text);
-        const prompt = (text: string) => waitFor(() => output.includes(text), 20000, `"${text}" in the output:\n${output}`);
+        const count = (text: string) => output.split(text).length - 1;
+        const prompt = (text: string, times = 1) => waitFor(() => count(text) >= times, 20000, `"${text}" in the output:\n${output}`);
 
         await prompt("press any key");
         type("y");
-        await prompt("http entry");
-        // the answer is prefilled with 8080, clear it first
-        type(`\x15${options.folder ? 0 : targetPort}\r`);
-        if (options.folder) {
-            await prompt("static directory");
-            type(`\x15${root}\r`);
-        }
+        // answers are prefilled (8080, the current directory), clear them first. The line editor
+        // redraws the question when typing, so count the complaints to know a question is asked again
+        const answer = async (question: string, complaint: string, answers: string[]) => {
+            for (const [index, text] of answers.entries()) {
+                if (index === 0) await prompt(question);
+                else await prompt(complaint, index);
+                await new Promise((resolve) => setTimeout(resolve, 300));
+                type(`\x15${text}\r`);
+            }
+        };
+        await answer("http entry", "Please enter a port number", options.portAnswers ?? [String(options.folder ? 0 : targetPort)]);
+        if (options.folder) await answer("static directory", "is not a directory.", options.dirAnswers ?? [root]);
+        if (options.noWait) return { terminal, scriptPid: 0, type, output: () => output, prompt };
         await prompt("Tunnel is up. Press Ctrl+C to stop.");
         await waitFor(() => user.tunnelConnection !== null, 10000, "the tunnel");
 
         const [scriptPid] = await pgrep(`bash ${scriptFile}`, true);
         expect(scriptPid).toBeGreaterThan(0);
-        return { terminal, scriptPid, type, output: () => output };
+        return { terminal, scriptPid, type, output: () => output, prompt };
     }
 
     async function expectStopped(user: User, scriptPid: number) {
@@ -172,6 +193,87 @@ describe.skipIf(!hasScript)("client script", () => {
         });
     });
 
+    describe.concurrent("setup", { timeout: 60000 }, () => {
+        it("asks again for a wrong port or directory", async () => {
+            const user = await store.create();
+            const run = await start(user, await writeScript(user), {
+                folder: true,
+                portAnswers: ["http", "70000", "0"],
+                dirAnswers: [path.join(root, "missing"), "~"],
+            });
+            expect(run.output()).toContain("Please enter a port number between 1 and 65535, or 0.");
+            expect(run.output()).toContain(`${path.join(root, "missing")} is not a directory.`);
+            // ~ is expanded to the home directory
+            expect(user.staticDirectory).toBe(home);
+            run.type("\x03");
+            await expectStopped(user, run.scriptPid);
+        });
+
+        it("gives up when no port is free", async () => {
+            const user = await store.create();
+            const busy = net.createServer();
+            const port = await new Promise<number>((resolve) => busy.listen(0, "127.0.0.1", () => resolve((busy.address() as net.AddressInfo).port)));
+            try {
+                // the only port in the range is taken, every attempt fails to bind
+                const run = await start(user, await writeScript(user, { portRange: [port, port] }), { folder: true, noWait: true });
+                await run.prompt("Could not start sshd");
+                let exited = run.terminal.exitCode !== null;
+                run.terminal.on("exit", () => (exited = true));
+                await waitFor(() => exited, 15000, `the script to exit, output:\n${run.output()}`);
+                expect(run.output()).not.toContain("Tunnel is up");
+                expect(await sshds(user)).toEqual([]);
+            } finally {
+                busy.close();
+            }
+        });
+
+        it("works without $USER", async () => {
+            const user = await store.create();
+            const run = await start(user, await writeScript(user), { env: { USER: undefined } });
+            expect(user.remoteUser).toBe(os.userInfo().username);
+            run.type("\x03");
+            await expectStopped(user, run.scriptPid);
+        });
+
+        it("refuses to run twice and leaves the running copy alone", async () => {
+            const user = await store.create();
+            const scriptFile = await writeScript(user);
+            const first = await start(user, scriptFile);
+            const [master] = await masters(user);
+
+            const terminal = spawn("script", ["-qfec", `stty cols 200 rows 50; bash '${scriptFile}'`, "/dev/null"], {
+                cwd: root,
+                env: { ...process.env, HOME: home },
+                stdio: ["pipe", "pipe", "pipe"],
+            });
+            terminals.push(terminal);
+            let output = "";
+            terminal.stdout!.on("data", (chunk) => (output += chunk));
+            await new Promise((resolve) => terminal.on("exit", resolve));
+            expect(output).toContain(`This script is already running (pid ${first.scriptPid}), stop that one first.`);
+            expect(output).not.toContain("press any key");
+
+            expect(await masters(user)).toEqual([master]);
+            expect(user.tunnelConnection).not.toBeNull();
+            first.type("\x03");
+            await expectStopped(user, first.scriptPid);
+        });
+
+        it("trims logs of earlier runs", async () => {
+            const user = await store.create();
+            await mkdir(workDir(user), { recursive: true });
+            const log = path.join(workDir(user), "reconnect.log");
+            await writeFile(log, Array.from({ length: 1000 }, (_, i) => `old line ${i}`).join("\n") + "\n");
+
+            const run = await start(user, await writeScript(user));
+            const lines = (await readFile(log, "utf8")).trim().split("\n");
+            expect(lines).toHaveLength(200);
+            expect(lines[199]).toBe("old line 999");
+            run.type("\x03");
+            await expectStopped(user, run.scriptPid);
+        });
+    });
+
     // the script sleeps about 6 s before the tunnel is up
     describe.concurrent("stopping", { timeout: 60000 }, () => {
         it.each([
@@ -205,7 +307,7 @@ describe.skipIf(!hasScript)("client script", () => {
             // kill 0 used to take the whole process group down, including a parent script
             const user = await store.create();
             const scriptFile = await writeScript(user);
-            const run = await start(user, scriptFile, { command: `bash -c 'bash ${scriptFile}; echo PARENT-CONTINUES'` });
+            const run = await start(user, scriptFile, { command: `bash -c "bash '${scriptFile}'; echo PARENT-CONTINUES"` });
             process.kill(run.scriptPid, "SIGTERM");
             await expectStopped(user, run.scriptPid);
             await waitFor(() => run.output().includes("PARENT-CONTINUES"), 5000, "the parent script to continue");

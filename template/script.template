@@ -1,6 +1,6 @@
 #! /bin/bash
 
-export CURRENT_USER="$USER" 
+export CURRENT_USER="$(id -un)"
 
 unameOut="$(uname -s)"
 case "${unameOut}" in
@@ -12,19 +12,12 @@ case "${unameOut}" in
     *)          machine="UNKNOWN:${unameOut}"
 esac
 
-function get_unused_port {
-    range=(`seq *LISTEN_PORT_LOW* *LISTEN_PORT_HIGH*`)
-    if [ $machine == "Mac" ]
-    then
-        # why on the earth use dot to separate port ???
-        ports=`netstat -anp tcp 2>/dev/null | grep LISTEN | grep '\d\+' | awk '{print $4}' | awk '{n=split($1,A,"."); print A[n]}' | uniq -u`
-    else
-        ports=`netstat -anp tcp 2>/dev/null | grep LISTEN | grep '\d\+' | awk '{print $4}' | awk '{n=split($1,A,":"); print A[n]}' | uniq -u`
-    fi
-    unused_ports=(`echo ${range[@]} ${ports[@]} ${ports[@]} | tr ' ' '\n' | sort | uniq -u`)
-    unused_ports_size=${#unused_ports[@]}
-    index=$(($RANDOM % $unused_ports_size))
-    echo ${unused_ports[$index]}
+LISTEN_PORT_LOW=*LISTEN_PORT_LOW*
+LISTEN_PORT_HIGH=*LISTEN_PORT_HIGH*
+
+# a random port for the local sshd, start_sshd tries another one when it is taken
+function pick_port {
+    echo $(( LISTEN_PORT_LOW + RANDOM % (LISTEN_PORT_HIGH - LISTEN_PORT_LOW + 1) ))
 }
 
 export TARGET_PORT="*TARGET_PORT*"
@@ -36,12 +29,41 @@ export CLIENT_SERVER_KEY="*CLIENT_SERVER_KEY*"
 # host keys of the gateway, so nobody else can pretend to be it
 export KNOWN_HOSTS="*KNOWN_HOSTS*"
 
-export LISTEN_PORT="$(get_unused_port)"
-
 export WORKDIR="$HOME/.gateway-mmis1000/$TARGET_USER"
 export CONTROL_SOCK="$WORKDIR/control.sock"
 
 mkdir -p "$WORKDIR"
+
+# a second copy would share the control socket and tear down the tunnel of the first one
+LOCK_DIR="$WORKDIR/run.lock"
+function lock_owner_alive {
+    local pid="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
+    [ -n "$pid" ] && kill -0 "$pid" >/dev/null 2>&1 && ! ps -o stat= -p "$pid" 2>/dev/null | grep -q Z
+}
+if ! mkdir "$LOCK_DIR" 2>/dev/null
+then
+    if lock_owner_alive
+    then
+        echo "This script is already running (pid $(cat "$LOCK_DIR/pid")), stop that one first."
+        exit 1
+    fi
+    # left by a run that was killed
+    rm -rf "$LOCK_DIR"
+    mkdir "$LOCK_DIR" || exit 1
+fi
+echo $$ > "$LOCK_DIR/pid"
+function release_lock {
+    [ "$(cat "$LOCK_DIR/pid" 2>/dev/null)" == "$$" ] && rm -rf "$LOCK_DIR"
+}
+
+# keep the logs of earlier runs short
+function trim_log {
+    [ -f "$1" ] && tail -n 200 "$1" > "$1.tmp" 2>/dev/null && mv "$1.tmp" "$1"
+}
+for log in sshd.log sshd.err reconnect.log
+do
+    trim_log "$WORKDIR/$log"
+done
 
 printf '%s\n' "$KNOWN_HOSTS" > "$WORKDIR/known_hosts"
 
@@ -60,21 +82,21 @@ SSH_OPTS=(
 )
 
 # template
+# the port is given with -p, so another one can be tried when it is taken
 export SSHD_CONFIG_TEMPLETE="
-Port $LISTEN_PORT
 #AddressFamily any
 ListenAddress 127.0.0.1
 #ListenAddress ::
 
-HostKey $WORKDIR/ssh_host_rsa_key
-HostKey $WORKDIR/ssh_host_ecdsa_key
-HostKey $WORKDIR/ssh_host_ed25519_key
+HostKey \"$WORKDIR/ssh_host_rsa_key\"
+HostKey \"$WORKDIR/ssh_host_ecdsa_key\"
+HostKey \"$WORKDIR/ssh_host_ed25519_key\"
 
 AllowUsers $CURRENT_USER
 
 PermitRootLogin no
-AuthorizedKeysFile     $WORKDIR/authorized_keys
-PidFile                $WORKDIR/sshd.daemon.pid
+AuthorizedKeysFile     \"$WORKDIR/authorized_keys\"
+PidFile                \"$WORKDIR/sshd.daemon.pid\"
 PasswordAuthentication no
 ChallengeResponseAuthentication no
 UsePAM no
@@ -96,13 +118,13 @@ GatewayPorts no
 PermitUserRC no
 "
 
-if [ ! "$(which ssh)" ]
+if ! command -v ssh >/dev/null 2>&1
 then
     echo "Sorry, this script requires ssh in your environment, but I can't find it "
     exit -1
 fi
 
-SSHD_PATH="$(which sshd)"
+SSHD_PATH="$(command -v sshd)"
 
 # prefer homebrew sshd on mac
 if [ $machine == "Mac" ]
@@ -154,6 +176,7 @@ function finish {
   # which includes the parent when run.sh is started from another script
   local jobs="$(jobs -p)"
   [ -n "$jobs" ] && kill $jobs >/dev/null 2>&1
+  release_lock
   echo Exited!
   exit
 }
@@ -178,6 +201,7 @@ function watch_script {
     sleep 2
   done
   stop_tunnel
+  release_lock
 }
 watch_script &
 
@@ -188,30 +212,48 @@ If you do not agree about this, please enter ^C to exit right now!
 =========="
 read -p "press any key to continue..." -n 1
 
-if [ $machine == "Mac" ]
-then
-    read -p "Forward which port as the http entry (0 to use static directory instead)? (default: 8080): " -e FORWARD_PORT
-    [ -z "$FORWARD_PORT" ] && FORWARD_PORT="8080"
-else
-    read -p "Forward which port as the http entry (0 to use static directory instead)?: " -i "8080" -e FORWARD_PORT
-fi
+function ask {
+    # ask <variable> <question> <default>, bash on macOS (3.2) can not prefill the answer
+    if [ $machine == "Mac" ]
+    then
+        read -p "$2 (default: $3): " -e "$1"
+        [ -z "${!1}" ] && eval "$1=\$3"
+    else
+        read -p "$2: " -i "$3" -e "$1"
+    fi
+}
+
+while true
+do
+    ask FORWARD_PORT "Forward which port as the http entry (0 to use static directory instead)?" 8080
+    if [[ "$FORWARD_PORT" =~ ^[0-9]+$ ]] && [ "$FORWARD_PORT" -le 65535 ]
+    then
+        FORWARD_PORT=$((10#$FORWARD_PORT))
+        break
+    fi
+    echo "Please enter a port number between 1 and 65535, or 0."
+done
 
 if [ "$FORWARD_PORT" != 0 ]
 then
     STATIC_DIRECTORY="null"
 else
-    if [ $machine == "Mac" ]
-    then
-        read -p "use which static directory? (default: $(pwd)): " -e STATIC_DIRECTORY
-        [ -z "$STATIC_DIRECTORY" ] && STATIC_DIRECTORY="$(pwd)"
-    else
-        read -p "use which static directory?: " -i "$(pwd)" -e STATIC_DIRECTORY
-    fi
+    while true
+    do
+        ask STATIC_DIRECTORY "use which static directory?" "$(pwd)"
+        # read does not expand ~
+        STATIC_DIRECTORY="${STATIC_DIRECTORY/#\~/$HOME}"
+        if [ -d "$STATIC_DIRECTORY" ]
+        then
+            STATIC_DIRECTORY="$(cd "$STATIC_DIRECTORY" && pwd)"
+            break
+        fi
+        echo "$STATIC_DIRECTORY is not a directory."
+    done
 fi
 
 # setup keys
-mkdir $WORKDIR > /dev/null 2> /dev/null
-cd $WORKDIR
+cd "$WORKDIR" || exit 1
 
 echo "$CLIENT_PRIVATE_KEY" > "$WORKDIR/id_rsa"
 echo "$CLIENT_SERVER_KEY" > "$WORKDIR/authorized_keys"
@@ -229,10 +271,30 @@ then
 fi
 
 
+# start the local sshd on a random port. sshd exits right away when the port is taken,
+# so if it is still running a second later it is listening, otherwise try another port
+function start_sshd {
+    local attempt pid
+    for attempt in 1 2 3 4 5
+    do
+        LISTEN_PORT="$(pick_port)"
+        "${SSHD_PATH}" -D -f "$WORKDIR/sshd_config" -p "$LISTEN_PORT" -e >> "$WORKDIR/sshd.log" 2>> "$WORKDIR/sshd.err" &
+        pid=$!
+        echo $pid > "$SSHD_PID_FILE"
+        sleep 1
+        if kill -0 $pid 2>/dev/null
+        then
+            return 0
+        fi
+        rm -f "$SSHD_PID_FILE"
+    done
+    echo "Could not start sshd, see $WORKDIR/sshd.err"
+    return 1
+}
+
 if [ "$FORWARD_PORT" == 0 ]
 then
-    "${SSHD_PATH}" -D -f $WORKDIR/sshd_config -p $LISTEN_PORT -e >> "$WORKDIR/sshd.log" 2>> "$WORKDIR/sshd.err" &
-    echo $! > "$SSHD_PID_FILE"
+    start_sshd || exit 1
 fi
 
 if [ "$FORWARD_PORT" == 0 ]

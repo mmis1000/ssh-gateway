@@ -246,10 +246,13 @@ export async function clientSshdConfig(vars: { LISTEN_PORT: number; WORKDIR: str
     const template = await readFile(path.resolve(__dirname, "../template/script.template"), "utf8");
     const match = /export SSHD_CONFIG_TEMPLETE="\n([\s\S]*?)\n"/.exec(template);
     if (!match) throw new Error("sshd config not found in template");
-    const values: Record<string, string> = { ...vars, LISTEN_PORT: String(vars.LISTEN_PORT) };
-    const config = match[1].replace(/\$(\w+)/g, (whole, name) => {
-        if (!(name in values)) throw new Error(`unknown variable ${whole} in sshd config`);
-        return values[name];
-    });
-    return `${config}\nStrictModes no\n`;
+    const values: Record<string, string> = { WORKDIR: vars.WORKDIR, CURRENT_USER: vars.CURRENT_USER };
+    const config = match[1]
+        .replace(/\\"/g, '"')
+        .replace(/\$(\w+)/g, (whole, name) => {
+            if (!(name in values)) throw new Error(`unknown variable ${whole} in sshd config`);
+            return values[name];
+        });
+    // run.sh passes the port with -p
+    return `Port ${vars.LISTEN_PORT}\n${config}\nStrictModes no\n`;
 }
