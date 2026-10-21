@@ -389,7 +389,7 @@ Disallow: /
                                 res.status(206);
                             } else {
                                 res.set('Content-Type', 'text/html');
-                                res.set('Content-Length', '');
+                                res.removeHeader('Content-Length');
                                 return res.status(416).end('range not satisfied');
                             }
 
@@ -402,7 +402,7 @@ Disallow: /
                                     return
                                 }
                                 res.set('Content-Type', 'text/plain');
-                                res.set('Content-Length', '');
+                                res.removeHeader('Content-Length');
                                 res.status(500).end(err.stack ? err.stack : err.toString());
                             })
                             
