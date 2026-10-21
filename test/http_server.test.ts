@@ -87,6 +87,16 @@ describe("http server", () => {
             expect(res.status).toBe(401);
             expect(res.headers["www-authenticate"]).toBe('Basic realm="Not authenticated"');
         });
+
+        it("asks for credential on update without auth, and keeps serving", async () => {
+            const res = await request(port, SETUP_HOST, "/update");
+            expect(res.status).toBe(401);
+            expect(res.headers["www-authenticate"]).toBe('Basic realm="Not authenticated"');
+
+            // the rejected lookup used to write headers again and crash the process
+            await new Promise((resolve) => setTimeout(resolve, 50));
+            expect((await request(port, SETUP_HOST, "/")).status).toBe(200);
+        });
     });
 
     describe("user content host", () => {

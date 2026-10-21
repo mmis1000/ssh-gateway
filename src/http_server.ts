@@ -522,6 +522,7 @@ To report abuse, go to ${config.setupProtocol}://${config.setupHost}:${config.se
             res.setHeader('WWW-Authenticate', 'Basic realm="Not authenticated"')
             res.status(401)
             res.end('')
+            return
         }
 
         const base64Str = authHeader.replace('Basic', '').trim()
