@@ -5,6 +5,7 @@ import os from "os";
 import path from "path";
 import { ChildProcess, execFile, spawn } from "child_process";
 import { chmod, mkdir, readFile, symlink, writeFile } from "fs/promises";
+import { BaseAgent, Client, ParsedKey, utils } from "ssh2";
 import { createHttpServer } from "../src/http_server";
 import { createSshServer } from "../src/ssh_server";
 import { createUser, User } from "../src/user";
@@ -195,6 +196,36 @@ describe("ssh server", () => {
             const res = await run("ssh", [...(await ClientSession.create(gateway, user, otherKey)).args(), "true"]);
             expect(res.code).toBe(255);
             expect(res.stderr).toContain("Permission denied");
+        });
+
+        it("rejects a valid public key with a forged signature", async () => {
+            // knowing the public key must not be enough, the signature has to be checked
+            const publicKey = utils.parseKey(user.privateKey_pub!) as ParsedKey;
+            class ForgingAgent extends BaseAgent {
+                getIdentities(cb: (err: Error | undefined, keys?: ParsedKey[]) => void) {
+                    cb(undefined, [publicKey]);
+                }
+                sign(_key: ParsedKey, _data: Buffer, ...args: any[]) {
+                    const cb = args[args.length - 1];
+                    // well formed ECDSA signature (DER sequence of r = 1, s = 1) that does not match the data
+                    cb(undefined, Buffer.from("3006020101020101", "hex"));
+                }
+            }
+
+            const client = new Client();
+            const result = await new Promise<string>((resolve) => {
+                client.on("ready", () => resolve("authenticated"));
+                client.on("error", (err: Error & { level?: string }) => resolve(err.level ?? err.message));
+                client.connect({
+                    host: "127.0.0.1",
+                    port: gateway.sshPort,
+                    username: user.id!,
+                    agent: new ForgingAgent(),
+                    readyTimeout: 10000,
+                });
+            });
+            client.end();
+            expect(result).toBe("client-authentication");
         });
 
         it("rejects unknown users", async () => {

@@ -75,11 +75,9 @@ export function createSshServer(config: Config, hostKeys: Buffer[]) {
                         return ctx.reject(['publickey']);
                     }
                     
-                    if (ctx.blob && ctx.signature && (ctx as any).hashAlgo) {
-                        // let verifier = crypto.createVerify(ctx.sigAlgo);
-                        // verifier.update(ctx.blob);
-
-                        if (parsed.verify(ctx.blob, ctx.signature, (ctx as any).hashAlgo)) {
+                    if (ctx.signature) {
+                        // hashAlgo is only set for rsa-sha2-*, other key types pick their own hash
+                        if (ctx.blob && parsed.verify(ctx.blob, ctx.signature, (ctx as any).hashAlgo) === true) {
                             ctx.accept();
                         }
                         else {
