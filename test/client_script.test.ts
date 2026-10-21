@@ -112,7 +112,7 @@ describe.skipIf(!hasScript)("client script", () => {
             await prompt("static directory");
             type(`\x15${root}\r`);
         }
-        await prompt("starting to check alive");
+        await prompt("Tunnel is up. Press Ctrl+C to stop.");
         await waitFor(() => user.tunnelConnection !== null, 10000, "the tunnel");
 
         const [scriptPid] = await pgrep(`bash ${scriptFile}`, true);
@@ -128,6 +128,49 @@ describe.skipIf(!hasScript)("client script", () => {
         }, 15000, "the script, its watchdog, its tunnel and the gateway side of it to go away");
         expect(scriptPid).toBeGreaterThan(0);
     }
+
+    describe.concurrent("output", { timeout: 60000 }, () => {
+        it("stays quiet while the tunnel is fine", async () => {
+            const user = await store.create();
+            const run = await start(user, await writeScript(user));
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            const settled = run.output();
+            expect(settled).toContain("Client accepted.");
+            expect(settled).not.toMatch(/Not all processes could be identified|Master running/);
+
+            // the script checks the tunnel every second, none of it may show up
+            await new Promise((resolve) => setTimeout(resolve, 4000));
+            expect(run.output()).toBe(settled);
+            run.type("\x03");
+            await expectStopped(user, run.scriptPid);
+        });
+
+        it.each([
+            ["port", false],
+            ["folder", true],
+        ])("reports a lost connection once and reconnects in %s mode", async (_, folder) => {
+            const user = await store.create();
+            const run = await start(user, await writeScript(user), { folder });
+            const [sshd] = await sshds(user);
+            const before = run.output().length;
+
+            // the gateway drops the connection, like a network outage would
+            user.tunnelConnection!.end();
+            await waitFor(() => run.output().slice(before).includes("Tunnel is up. Press Ctrl+C to stop."), 30000, "the script to reconnect");
+            await waitFor(() => user.tunnelConnection !== null, 10000, "the new tunnel");
+
+            const printed = run.output().slice(before).replace(/\r/g, "").trim().split("\n");
+            expect(printed).toEqual([
+                expect.stringMatching(/^Connection lost, reconnecting\.\.\. \(details in .*reconnect\.log\)$/),
+                "Tunnel is up. Press Ctrl+C to stop.",
+            ]);
+            // only the connection is replaced, the local sshd keeps serving the folder
+            if (folder) expect(await sshds(user)).toEqual([sshd]);
+
+            run.type("\x03");
+            await expectStopped(user, run.scriptPid);
+        });
+    });
 
     // the script sleeps about 6 s before the tunnel is up
     describe.concurrent("stopping", { timeout: 60000 }, () => {

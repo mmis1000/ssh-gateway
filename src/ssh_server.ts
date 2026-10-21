@@ -45,8 +45,9 @@ function killConnection(client: Connection) {
  *    no agent or X11 forwarding, only the issued key is offered
  * 3: cleans up on ctrl+\ and on hangup, never kills its parent, a watchdog cleans up
  *    after kill -9, and the next start removes what a killed run left
+ * 4: quiet while the tunnel is fine, reports only when the connection is lost and back
  */
-export const CLIENT_SCRIPT_VERSION = 3
+export const CLIENT_SCRIPT_VERSION = 4
 const VERSION_HEADER = /^v(\d+):$/
 
 export function createSshServer(config: Config, store: UserStore, hostKeys: Buffer[], options: SshServerOptions = {}) {

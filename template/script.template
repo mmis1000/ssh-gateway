@@ -17,9 +17,9 @@ function get_unused_port {
     if [ $machine == "Mac" ]
     then
         # why on the earth use dot to separate port ???
-        ports=`netstat -anp tcp | grep LISTEN | grep '\d\+' | awk '{print $4}' | awk '{n=split($1,A,"."); print A[n]}' | uniq -u`
+        ports=`netstat -anp tcp 2>/dev/null | grep LISTEN | grep '\d\+' | awk '{print $4}' | awk '{n=split($1,A,"."); print A[n]}' | uniq -u`
     else
-        ports=`netstat -anp tcp | grep LISTEN | grep '\d\+' | awk '{print $4}' | awk '{n=split($1,A,":"); print A[n]}' | uniq -u`
+        ports=`netstat -anp tcp 2>/dev/null | grep LISTEN | grep '\d\+' | awk '{print $4}' | awk '{n=split($1,A,":"); print A[n]}' | uniq -u`
     fi
     unused_ports=(`echo ${range[@]} ${ports[@]} ${ports[@]} | tr ' ' '\n' | sort | uniq -u`)
     unused_ports_size=${#unused_ports[@]}
@@ -136,10 +136,14 @@ function stop_sshd {
   fi
 }
 
-# close the tunnel and stop the local sshd, also left overs of a run that was killed with -9
-function stop_tunnel {
+function close_master {
   ssh -N -O exit "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST >/dev/null 2>&1
   rm -f "$CONTROL_SOCK" >/dev/null 2>&1
+}
+
+# close the tunnel and stop the local sshd, also left overs of a run that was killed with -9
+function stop_tunnel {
+  close_master
   stop_sshd
 }
 
@@ -216,14 +220,12 @@ echo "$SSHD_CONFIG_TEMPLETE" > "$WORKDIR/sshd_config"
 chmod 600 id_rsa
 chmod 600 authorized_keys
 
-if [ -f "$WORKDIR/ssh_host_rsa_key" ]
+if [ ! -f "$WORKDIR/ssh_host_rsa_key" ]
 then
-    echo "Host key exists. skipping..."
-else
-    echo "Generating host keys..."
-    ssh-keygen -N '' -t rsa -f "$WORKDIR/ssh_host_rsa_key"
-    ssh-keygen -N '' -t ecdsa -f "$WORKDIR/ssh_host_ecdsa_key"
-    ssh-keygen -N '' -t ed25519 -f "$WORKDIR/ssh_host_ed25519_key"
+    echo "Generating host keys for the local sshd..."
+    ssh-keygen -q -N '' -t rsa -f "$WORKDIR/ssh_host_rsa_key"
+    ssh-keygen -q -N '' -t ecdsa -f "$WORKDIR/ssh_host_ecdsa_key"
+    ssh-keygen -q -N '' -t ed25519 -f "$WORKDIR/ssh_host_ed25519_key"
 fi
 
 
@@ -233,49 +235,59 @@ then
     echo $! > "$SSHD_PID_FILE"
 fi
 
-ssh -N -M "${SSH_OPTS[@]}" -o "ClearAllForwardings yes" $TARGET_USER@$TARGET_HOST & # spawn the master
-sleep 5
-echo 'preparing to register client...'
-ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v3: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
-sleep 1
-echo 'starting to forward connection'
-
 if [ "$FORWARD_PORT" == 0 ]
 then
-    ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$LISTEN_PORT $TARGET_USER@$TARGET_HOST
+    TUNNEL_PORT=$LISTEN_PORT
 else
-    ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$FORWARD_PORT $TARGET_USER@$TARGET_HOST
+    TUNNEL_PORT=$FORWARD_PORT
 fi
 
-# check ssh connectivity
+# open the connection, register and add the reverse forward
+function connect {
+    ssh -N -M "${SSH_OPTS[@]}" -o "ClearAllForwardings yes" $TARGET_USER@$TARGET_HOST &
+    sleep 5
+    ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v4: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")" || return 1
+    sleep 1
+    ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$TUNNEL_PORT $TARGET_USER@$TARGET_HOST
+}
+
+function tunnel_alive {
+    ssh -O check -N "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST >/dev/null 2>&1
+}
+
+RECONNECT_LOG="$WORKDIR/reconnect.log"
+
+echo "Connecting to $TARGET_HOST..."
+if connect && tunnel_alive
+then
+    echo "Tunnel is up. Press Ctrl+C to stop."
+    CONNECTION_LOST=0
+else
+    echo "Could not open the tunnel, retrying... (details in $RECONNECT_LOG)"
+    CONNECTION_LOST=1
+fi
+
+# stay quiet while the connection is fine, say something only when it breaks and comes back
 while true
 do
-    echo 'starting to check alive'
-    ssh -O check -N "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST
-    LAST_STATUS=$?
-    echo '---------------'
-    echo $LAST_STATUS
-    if [ $LAST_STATUS != 0 ]
+    if ! tunnel_alive
     then
-        echo 'connection dead... respawning'
-        ssh -N -O exit "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST
-        rm -f "$CONTROL_SOCK"
-        
-        ssh -N -M "${SSH_OPTS[@]}" -o "ClearAllForwardings yes" $TARGET_USER@$TARGET_HOST & # spawn the master
-        sleep 5
-        echo 'preparing to register client...'
-        ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v3: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
-        sleep 1
-        echo 'starting to forward connection'
-        if [ "$FORWARD_PORT" == 0 ]
+        if [ $CONNECTION_LOST == 0 ]
         then
-            ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$LISTEN_PORT $TARGET_USER@$TARGET_HOST
-        else
-            ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$FORWARD_PORT $TARGET_USER@$TARGET_HOST
+            echo "Connection lost, reconnecting... (details in $RECONNECT_LOG)"
+            CONNECTION_LOST=1
         fi
+        # keep the local sshd, only the connection to the gateway is replaced
+        close_master
+        {
+            echo "--- $(date)"
+            connect
+        } >> "$RECONNECT_LOG" 2>&1
+    elif [ $CONNECTION_LOST == 1 ]
+    then
+        echo "Tunnel is up. Press Ctrl+C to stop."
+        CONNECTION_LOST=0
     fi
-    
+
     sleep 1
 done
-
-echo "exit child"
