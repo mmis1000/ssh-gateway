@@ -34,6 +34,10 @@ export async function createHttpServer(config: Config) {
 
     const router = express();
     router.disable('x-powered-by');
+    if (config.trustedProxy) {
+        // config uses "localhost" for a reverse proxy on the same machine, express calls it "loopback"
+        router.set('trust proxy', config.trustedProxy === 'localhost' ? 'loopback' : config.trustedProxy);
+    }
 
     const server = http.createServer(router);
     const wsServer = new WebSocketServer({ noServer: true,  });

@@ -303,6 +303,20 @@ describe("ssh server", () => {
             expect(echoed.headers["x-forwarded-for"]).toMatch(/127\.0\.0\.1 127\.0\.0\.1$/);
         });
 
+        it("uses the client address from a trusted local proxy", async () => {
+            const inspector = await openInspector(gateway.httpPort, user.id!, user.password!);
+            try {
+                const res = await request(gateway.httpPort, host(), "/behind-proxy", {
+                    headers: { "X-Forwarded-For": "203.0.113.9" },
+                });
+                expect(JSON.parse(res.body).headers["x-forwarded-for"]).toBe("203.0.113.9 127.0.0.1");
+                const done = await inspector.waitFor(isEntry((entry) => entry.path === "/behind-proxy" && entry.state === "complete"));
+                expect(done.entry.remoteAddress).toBe("203.0.113.9");
+            } finally {
+                inspector.ws.close();
+            }
+        });
+
         it("forwards request bodies", async () => {
             const body = JSON.stringify({ hello: "world".repeat(1000) });
             const res = await request(gateway.httpPort, host(), "/submit", {
