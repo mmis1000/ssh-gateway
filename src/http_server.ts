@@ -10,7 +10,7 @@ import mime from "mime";
 import { createUser, getUserWithName, getUserWithDomain } from"./user";
 import ssh2_streams from 'ssh2-streams';
 const SFTPStream = ssh2_streams.SFTPStream;
-import { decodePath, encodePath, parseRawData } from "./utils";
+import { decodePath, encodePath, getContentType, parseRawData } from "./utils";
 import getFastReadStream from "./ssh_fast_read_stream";
 import httpProxy from 'http-proxy';
 import { RawData, WebSocketServer } from 'ws';
@@ -26,7 +26,7 @@ const getId = (name: string) => {
     return current
 }
 
-export default async function(config: Config) {
+export async function createHttpServer(config: Config) {
 
     const router = express();
     router.disable('x-powered-by');
@@ -351,8 +351,7 @@ Disallow: /
                             console.log(`${userData.id}: [HTTP] is file  ${fullPath}`);
                             
                             let size = stats.size;
-                            let ext = path.extname(baseName);
-                            let contentType = ext ? (mime.getType(ext) || 'application/octet-stream') : 'application/octet-stream';
+                            let contentType = getContentType(baseName);
                             // let range = req.headers.range ? parseRange(size, req.headers.range) : null;
                             const range = req.range(stats.size)
                             let readStream: ReturnType<typeof getFastReadStream> | null = null;
@@ -580,9 +579,15 @@ $ ./run.sh
             res.sendFile('app/dist/index.html', { root: path.resolve(__dirname, '../') })
         })
     } else {
-        const viteServerMiddleware = await (await import("./vite_dev_server.mjs")).createServer(server)
+        const viteServerMiddleware = await (await import("./vite_dev_server.mjs")).createServer(server, [config.setupHost])
         router.use(viteServerMiddleware.middlewares)
     }
+
+    return { router, server }
+}
+
+export default async function(config: Config) {
+    const { server } = await createHttpServer(config)
 
     server.listen(config.httpListen || 8080, "0.0.0.0", function() {
         let addr = server.address() as AddressInfo;

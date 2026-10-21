@@ -1,4 +1,6 @@
 import { RawData } from "ws"
+import mime from "mime"
+import path from "path"
 
 type CancelCallback = () => void
 type HandlerCallback<T> = (value: T) => void
@@ -250,6 +252,10 @@ export const createTaskQueue = <Result, Args extends any[] = []>(timeout: number
 export function encodePath(str: string) {
     return str.split('/').map((p) => encodeURIComponent(p)).join('/')
 }
+export function getContentType(fileName: string) {
+    const ext = path.extname(fileName)
+    return ext ? (mime.getType(ext) || 'application/octet-stream') : 'application/octet-stream'
+}
 export function decodePath(str: string) {
     return str.split('/').map((p) => decodeURIComponent(p)).join('/')
 }
@@ -266,7 +272,7 @@ export function parseRawData(msg: RawData) {
     } else if (msg instanceof ArrayBuffer) {
         text = decoder.decode(msg)
     } else {
-        throw new Error('unknown content ', msg)
+        throw new Error('unknown content', { cause: msg })
     }
 
     return JSON.parse(text)

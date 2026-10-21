@@ -19,7 +19,7 @@ export class WsManager<Message extends AbstractPacket> {
           } catch (err) {}
         }
       }
-    }, keepAliveMs)
+    }, keepAliveMs).unref()
   }
 
   addManagedSocket(roomName: string, ws: WebSocket) {
