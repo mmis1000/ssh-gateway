@@ -290,6 +290,11 @@ Disallow: /
                 let fullPath = path.resolve(remoteMountPoint!, reqPath.slice(1));
                 let realBaseDir = path.dirname(fullPath);
                 let realBaseName = path.basename(fullPath)
+
+                const pathInMountPoint = path.relative(remoteMountPoint!, fullPath)
+                if (pathInMountPoint === '..' || pathInMountPoint.startsWith('../') || path.isAbsolute(pathInMountPoint)) {
+                    return res.status(403).end('Out of folder reading rejected');
+                }
                 
                 userData.getSftp()
                 .then(function (sftpClient) {
