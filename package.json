@@ -25,7 +25,6 @@
     "mime": "^4.1.0",
     "range-parser": "^1.2.0",
     "shell-quote": "^1.8.1",
-    "socksv5": "0.0.6",
     "ssh2": "^1.14.0",
     "ssh2-streams": "^0.4.10",
     "ws": "^8.16.0"

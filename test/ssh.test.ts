@@ -102,7 +102,7 @@ async function startGateway(sshOptions: SshServerOptions = {}): Promise<Gateway>
     const httpPort = await listen(httpServer);
     const socksServer = createSocksServer(config, store);
     await new Promise<void>((resolve) => socksServer.listen(0, "127.0.0.1", resolve));
-    const socksPort = socksServer.address().port;
+    const socksPort = (socksServer.address() as net.AddressInfo).port;
 
     return {
         saveDir,
@@ -814,6 +814,26 @@ describe("ssh server", () => {
                 socket.write("ping");
                 const reply = await new Promise<string>((resolve) => socket.once("data", (data) => resolve(String(data))));
                 expect(reply).toBe("ping");
+                socket.end();
+            });
+
+            it("keeps data sent together with the request through the tunnel", async () => {
+                const user_ = Buffer.from(user.id!);
+                const pass = Buffer.from(user.password!);
+                const socket = net.connect(gateway.socksPort, "127.0.0.1");
+                let data = Buffer.alloc(0);
+                socket.on("data", (chunk) => (data = Buffer.concat([data, chunk])));
+                await new Promise((resolve) => socket.on("connect", resolve));
+                // greeting, login, request and payload in one packet, without waiting for replies
+                socket.write(Buffer.concat([
+                    Buffer.from([5, 1, 2]),
+                    Buffer.from([1, user_.length]), user_, Buffer.from([pass.length]), pass,
+                    Buffer.from([5, 1, 0, 3, 9]), Buffer.from("localhost"), Buffer.from([echoPort >> 8, echoPort & 0xff]),
+                    Buffer.from("early"),
+                ]));
+                await waitFor(async () => (data.includes(Buffer.from("early")) ? true : undefined), 5000);
+                expect(data.subarray(0, 4)).toEqual(Buffer.from([5, 2, 1, 0]));
+                expect(data.subarray(4, 6)).toEqual(Buffer.from([5, 0]));
                 socket.end();
             });
 
