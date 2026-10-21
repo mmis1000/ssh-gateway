@@ -6,7 +6,8 @@ import path from "path";
 import type { Express } from "express";
 import ssh2_streams from "ssh2-streams";
 import { createHttpServer } from "../src/http_server";
-import { close, createConfig, createTempDir, HTTP_HOST, listen, request, SETUP_HOST } from "./helpers";
+import WebSocket from "ws";
+import { close, createConfig, createTempDir, HTTP_HOST, listen, openInspector, request, SETUP_HOST } from "./helpers";
 
 const SFTPStream = ssh2_streams.SFTPStream as any;
 
@@ -96,6 +97,33 @@ describe("http server", () => {
             // the rejected lookup used to write headers again and crash the process
             await new Promise((resolve) => setTimeout(resolve, 50));
             expect((await request(port, SETUP_HOST, "/")).status).toBe(200);
+        });
+    });
+
+    describe("inspector websocket", () => {
+        it.each([
+            ["unknown user", "no-such-user", "x"],
+            ["malformed login", "", ""],
+        ])("closes with the auth failed code for %s", async (_, username, password) => {
+            const inspector = await openInspector(port, username, password);
+            expect(await inspector.closed).toEqual({ code: 4001, reason: "bad username or password" });
+        });
+
+        it("closes with the auth failed code for a wrong password", async () => {
+            const userIds = (await readdir(saveDir)).filter((name) => name !== "domains");
+            expect(userIds.length).toBeGreaterThan(0);
+            const inspector = await openInspector(port, userIds[0], "wrong");
+            expect((await inspector.closed).code).toBe(4001);
+        });
+
+        it("ignores websocket upgrades on other hosts", async () => {
+            const ws = new WebSocket(`ws://127.0.0.1:${port}/__observe_requests`, { headers: { Host: HTTP_HOST } });
+            const result = await new Promise((resolve) => {
+                ws.on("open", () => resolve("open"));
+                ws.on("error", () => resolve("error"));
+            });
+            expect(result).toBe("error");
+            ws.terminate();
         });
     });
 

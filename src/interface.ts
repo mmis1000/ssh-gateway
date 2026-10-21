@@ -43,6 +43,39 @@ export interface Config {
 
 }
 
+export type Headers = Record<string, string | string[] | number | undefined>
+
+export interface CapturedBody {
+    /** total bytes seen on the wire */
+    size: number,
+    /** captured bytes, base64, decoded from content-encoding when possible */
+    data: string,
+    /** true when only the first part of the body is captured */
+    truncated: boolean,
+    /** content-encoding that was removed from data, or that failed to decode */
+    encoding: string | null,
+    decoded: boolean,
+}
+
+export interface InspectorEntry {
+    id: number,
+    /** epoch ms */
+    startTime: number,
+    /** ms, null while pending */
+    duration: number | null,
+    state: 'pending' | 'complete' | 'aborted',
+    method: string,
+    path: string,
+    remoteAddress: string,
+    requestHeaders: Headers,
+    requestBody: CapturedBody | null,
+    status: number | null,
+    responseHeaders: Headers | null,
+    responseBody: CapturedBody | null,
+    /** id of the entry this request replays */
+    replayOf: number | null,
+}
+
 export interface AbstractPacket {
     type: string,
     id: number
@@ -52,29 +85,35 @@ export interface PacketPing extends AbstractPacket {
     type: 'ping'
 }
 
-
 interface PacketAuthenticated extends AbstractPacket {
-    type: 'authenticated'
+    type: 'authenticated',
+    /** public url of the user's forward */
+    url: string,
 }
 
-
-interface PacketRequestHeader extends AbstractPacket {
-    type: 'request-header',
-    method: string,
-    path: string,
-    headers: Record<string, string | string[] | undefined>
+interface PacketHistory extends AbstractPacket {
+    type: 'history',
+    entries: InspectorEntry[],
 }
 
-interface PacketResponseHeader extends AbstractPacket {
-    type: 'response-header',
-    method: string,
-    path: string,
-    code: number,
-    headers: Record<string, string | string[] | undefined>
+/** sent when a request starts and again when it ends, replaces the entry with same id */
+interface PacketEntry extends AbstractPacket {
+    type: 'entry',
+    entry: InspectorEntry,
+}
+
+interface PacketReplayFailed extends AbstractPacket {
+    type: 'replay-failed',
+    message: string,
 }
 
 export type Packet =
     | PacketPing
     | PacketAuthenticated
-    | PacketRequestHeader
-    | PacketResponseHeader
+    | PacketHistory
+    | PacketEntry
+    | PacketReplayFailed
+
+/** messages sent from the inspector after authentication */
+export type ClientPacket =
+    | { type: 'replay', id: number }

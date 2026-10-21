@@ -3,7 +3,8 @@ import os from "os";
 import path from "path";
 import { mkdtemp, rm } from "fs/promises";
 import { AddressInfo } from "net";
-import { Config } from "../src/interface";
+import WebSocket from "ws";
+import { ClientPacket, Config, InspectorEntry, Packet } from "../src/interface";
 
 export const SETUP_HOST = "gateway.test";
 export const HTTP_HOST = "ugc.test";
@@ -95,3 +96,43 @@ export function request(
         req.end(options.body);
     });
 }
+
+/** an inspector websocket client, collects every packet it receives */
+export async function openInspector(port: number, username: string, password: string) {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/__observe_requests`, { headers: { Host: SETUP_HOST } });
+    const packets: Packet[] = [];
+    const waiters: (() => void)[] = [];
+    ws.on("message", (data) => {
+        packets.push(JSON.parse(data.toString()));
+        waiters.splice(0).forEach((wake) => wake());
+    });
+    const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+        ws.on("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+    });
+    await new Promise<void>((resolve, reject) => {
+        ws.once("open", () => resolve());
+        ws.once("error", reject);
+    });
+    ws.send(JSON.stringify([username, password]));
+
+    /** resolves with the first packet (already received or future) matching the predicate */
+    const waitFor = <T extends Packet>(predicate: (packet: Packet) => packet is T, timeoutMs = 10000) =>
+        new Promise<T>((resolve, reject) => {
+            const timer = setTimeout(() => reject(new Error("timed out waiting for packet")), timeoutMs);
+            const check = () => {
+                const found = packets.find(predicate);
+                if (found) {
+                    clearTimeout(timer);
+                    resolve(found);
+                } else {
+                    waiters.push(check);
+                }
+            };
+            check();
+        });
+
+    return { ws, packets, closed, waitFor, send: (packet: ClientPacket) => ws.send(JSON.stringify(packet)) };
+}
+
+export const isEntry = (predicate: (entry: InspectorEntry) => boolean) =>
+    (packet: Packet): packet is Extract<Packet, { type: "entry" }> => packet.type === "entry" && predicate(packet.entry);

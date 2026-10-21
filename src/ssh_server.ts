@@ -134,6 +134,7 @@ export function createSshServer(config: Config, hostKeys: Buffer[]) {
 Forward server is opened at ${config.httpProtocol}://${client.userData!.domainName}.${config.httpHost}:${config.httpPort}/
 Socks v5 tunnel is opened at socks5://${client.userData!.id}:${client.userData!.password}@${config.socksHost}:${config.socksPort}
 To get new version of current script, fetch it from ${config.setupProtocol}://${client.userData!.id}:${client.userData!.password}@${config.setupHost}:${config.setupPort}/update
+Inspect requests at ${config.setupProtocol}://${config.setupHost}:${config.setupPort}/app/#${client.userData!.id}:${client.userData!.password}
 `);
                         stream.exit(0);
                     }

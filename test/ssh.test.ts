@@ -8,7 +8,7 @@ import { chmod, mkdir, readFile, symlink, writeFile } from "fs/promises";
 import { createHttpServer } from "../src/http_server";
 import { createSshServer } from "../src/ssh_server";
 import { createUser, User } from "../src/user";
-import { close, createConfig, createTempDir, HTTP_HOST, listen, request } from "./helpers";
+import { close, createConfig, createTempDir, HTTP_HOST, isEntry, listen, openInspector, request } from "./helpers";
 
 // Drives the gateway with the real OpenSSH client the same way template/script.template does:
 // a ControlMaster connection, a "v1: register" exec and a "-O forward -R 22:localhost:<port>" reverse tunnel.
@@ -254,6 +254,7 @@ describe("ssh server", () => {
         let user: User;
         let session: ClientSession;
         let target: http.Server;
+        const targetHits: string[] = [];
         const host = () => `${user.domainName}.${HTTP_HOST}`;
 
         beforeAll(async () => {
@@ -261,6 +262,7 @@ describe("ssh server", () => {
                 const chunks: Buffer[] = [];
                 req.on("data", (chunk) => chunks.push(chunk));
                 req.on("end", () => {
+                    targetHits.push(`${req.method} ${req.url}`);
                     const status = /^\/status\/(\d+)$/.exec(req.url!);
                     res.writeHead(status ? Number(status[1]) : 200, {
                         "Content-Type": "application/json",
@@ -316,6 +318,44 @@ describe("ssh server", () => {
         it("passes through status codes", async () => {
             const res = await request(gateway.httpPort, host(), "/status/418");
             expect(res.status).toBe(418);
+        });
+
+        it("streams requests to the inspector and replays them", async () => {
+            const inspector = await openInspector(gateway.httpPort, user.id!, user.password!);
+            try {
+                const authenticated = await inspector.waitFor((p): p is Extract<typeof p, { type: "authenticated" }> => p.type === "authenticated");
+                expect(authenticated.url).toBe(`http://${host()}:80/`);
+                const history = await inspector.waitFor((p): p is Extract<typeof p, { type: "history" }> => p.type === "history");
+                expect(history.entries.some((entry) => entry.path === "/hello/world?q=1")).toBe(true);
+
+                const body = JSON.stringify({ inspect: "me" });
+                await request(gateway.httpPort, host(), "/inspect-me", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body,
+                });
+
+                const pending = await inspector.waitFor(isEntry((entry) => entry.path === "/inspect-me" && entry.state === "pending"));
+                const done = await inspector.waitFor(isEntry((entry) => entry.path === "/inspect-me" && entry.state === "complete"));
+                expect(done.entry.id).toBe(pending.entry.id);
+                expect(done.entry.status).toBe(200);
+                expect(done.entry.responseHeaders?.["x-target"]).toBe("yes");
+                expect(Buffer.from(done.entry.requestBody!.data, "base64").toString()).toBe(body);
+                expect(JSON.parse(Buffer.from(done.entry.responseBody!.data, "base64").toString())).toMatchObject({ body });
+
+                const hitsBefore = targetHits.filter((hit) => hit === "POST /inspect-me").length;
+                inspector.send({ type: "replay", id: done.entry.id });
+                const replayed = await inspector.waitFor(isEntry((entry) => entry.replayOf === done.entry.id && entry.state === "complete"));
+                expect(replayed.entry.status).toBe(200);
+                expect(Buffer.from(replayed.entry.requestBody!.data, "base64").toString()).toBe(body);
+                expect(targetHits.filter((hit) => hit === "POST /inspect-me").length).toBe(hitsBefore + 1);
+
+                inspector.send({ type: "replay", id: 99999 });
+                const failed = await inspector.waitFor((p): p is Extract<typeof p, { type: "replay-failed" }> => p.type === "replay-failed");
+                expect(failed.message).toContain("no longer in history");
+            } finally {
+                inspector.ws.close();
+            }
         });
 
         it("handles concurrent requests", async () => {
@@ -444,6 +484,20 @@ describe("ssh server", () => {
             expect(res.body).toContain('href="/sub%20dir"');
             expect(res.body).toContain('href="/digits.txt"');
             expect(res.body).toContain('href="/link-inside"');
+        });
+
+        it("records static responses for the inspector", async () => {
+            const inspector = await openInspector(gateway.httpPort, user.id!, user.password!);
+            try {
+                await inspector.waitFor((p): p is Extract<typeof p, { type: "history" }> => p.type === "history");
+                await get("/style.css");
+                const done = await inspector.waitFor(isEntry((entry) => entry.path === "/style.css" && entry.state === "complete"));
+                expect(done.entry.status).toBe(200);
+                expect(done.entry.responseHeaders?.["content-type"]).toMatch(/^text\/css/);
+                expect(Buffer.from(done.entry.responseBody!.data, "base64").toString()).toBe("body {}");
+            } finally {
+                inspector.ws.close();
+            }
         });
 
         it("returns 404 for missing files", async () => {

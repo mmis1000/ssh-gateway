@@ -1,14 +1,113 @@
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --text: #1d2330;
+  --muted: #677085;
+  --border: #e2e5eb;
+  --hover: #f0f2f6;
+  --selected: #e3ecfd;
+  --code: #f1f3f6;
+  --notice: #fff4d6;
+  --accent: #2f6fde;
+  --ok: #1f9d55;
+  --warn: #c27c0e;
+  --error: #d43c3c;
+  --redirect: #3b78c4;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
+  color-scheme: light;
+  font-family: Inter, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+  font-size: 14px;
+  line-height: 1.45;
+  color: var(--text);
+  background: var(--bg);
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171c;
+    --panel: #1c1f26;
+    --text: #e3e6ec;
+    --muted: #9099ab;
+    --border: #2c313b;
+    --hover: #232731;
+    --selected: #24324d;
+    --code: #232731;
+    --notice: #3d3420;
+    --accent: #7aa7ff;
+    --ok: #3ccf7a;
+    --warn: #e8a93a;
+    --error: #ff6b6b;
+    --redirect: #6ea8ff;
+
+    color-scheme: dark;
+  }
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+code {
+  font-family: var(--mono);
+}
+
+input {
+  padding: 6px 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: inherit;
+  font: inherit;
+}
+
+button {
+  padding: 5px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+button:hover:not(:disabled) {
+  background: var(--hover);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+button.primary {
+  padding: 8px 12px;
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+button.link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+}
+
+.badge {
+  display: inline-block;
+  min-width: 3em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+.status-ok { color: var(--ok); }
+.status-redirect { color: var(--redirect); }
+.status-warn { color: var(--warn); }
+.status-error { color: var(--error); }
+.status-pending { color: var(--muted); }

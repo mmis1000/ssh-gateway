@@ -1,4 +1,4 @@
-import { Config, Packet } from "./interface";
+import { ClientPacket, Config, Packet } from "./interface";
 
 import http from "http";
 import express from "express";
@@ -17,6 +17,10 @@ import { RawData, WebSocketServer } from 'ws';
 import { AddressInfo } from "net";
 import { Duplex, pipeline } from "stream";
 import { WsManager } from "./ws_manager";
+import { Inspector } from "./inspector";
+
+/** websocket close code for failed inspector login, the app does not retry on it */
+const WS_AUTH_FAILED = 4001
 
 const idMap: Record<string, number> = {}
 const getId = (name: string) => {
@@ -41,7 +45,6 @@ export async function createHttpServer(config: Config) {
             } catch (err) {}
         }
         const tempHandler = async (msg: RawData, isBinary: boolean) => {
-            console.log(msg, isBinary)
             if (isBinary) return
 
             try {
@@ -55,18 +58,39 @@ export async function createHttpServer(config: Config) {
                     ws.off('message', tempHandler)
                     ws.off('error', tempErrorHandler)
 
-                    const msg: Packet = {
+                    const send = (packet: Packet) => ws.send(JSON.stringify(packet))
+                    send({
                         type: 'authenticated',
-                        id: getId(username)
-                    }
-                    ws.send(JSON.stringify(msg))
+                        id: getId(username),
+                        url: `${config.httpProtocol}://${user.domainName}.${config.httpHost}:${config.httpPort}/`
+                    })
+                    send({
+                        type: 'history',
+                        id: -1,
+                        entries: inspector.getHistory(username)
+                    })
+
+                    ws.on('message', (msg: RawData, isBinary: boolean) => {
+                        if (isBinary) return
+                        let packet: ClientPacket
+                        try {
+                            packet = parseRawData(msg)
+                        } catch (err) {
+                            return
+                        }
+                        if (packet.type === 'replay' && typeof packet.id === 'number') {
+                            inspector.replay(username, packet.id).catch((err: Error) => {
+                                send({ type: 'replay-failed', id: packet.id, message: err.message })
+                            })
+                        }
+                    })
                 } else {
                     console.log(`[HTTP] failed auth ws attempt`)
-                    ws.close(1001, 'bad username or password')
+                    ws.close(WS_AUTH_FAILED, 'bad username or password')
                 }
             } catch (err) {
                 console.log(`[HTTP] failed auth ws attempt`)
-                ws.close(1001, 'bad username or password')
+                ws.close(WS_AUTH_FAILED, 'bad username or password')
             }
         }
         ws.on('message', tempHandler)
@@ -75,6 +99,7 @@ export async function createHttpServer(config: Config) {
     });
 
     const wsManager = new WsManager<Packet>()
+    const inspector = new Inspector(wsManager, () => (server.address() as AddressInfo).port)
     var proxy = httpProxy.createProxyServer({
         target: {
             host: 'localhost',
@@ -87,6 +112,7 @@ export async function createHttpServer(config: Config) {
         let domain = req.headers.host?.split(':')[0];
 
         if (!domain) {
+            socket.destroy()
             return
         }
 
@@ -103,6 +129,7 @@ export async function createHttpServer(config: Config) {
 
         if (!domain.endsWith(config.httpHost) || domain === config.httpHost) {
             // do not proxy it
+            socket.destroy()
             return;
         }
 
@@ -144,7 +171,7 @@ export async function createHttpServer(config: Config) {
             }
         })
         .catch(function (err) {
-            // just let it go
+            socket.destroy()
         })
     });
 
@@ -191,15 +218,7 @@ Disallow: /
                 throw new Error('aborted')
             }
 
-            const requestId = getId(subdomain)
-
-            wsManager.broadcast(userData.id! ,{
-                type: 'request-header',
-                id: requestId,
-                method: req.method,
-                path: req.url,
-                headers: req.headers
-            })
+            const tracker = inspector.track(userData.id!, req, res, { remoteAddress: req.ip ?? '' })
 
             if (userData.httpPort !== 0) {
                 userData.getConnectionAgent()
@@ -232,6 +251,7 @@ Disallow: /
 
                     pipeline(
                         req,
+                        tracker.requestTap(),
                         client,
                         (error) => {
                             if (error) {
@@ -250,15 +270,7 @@ Disallow: /
                             "X-Proxy-User": userData.id
                         }))
 
-                        wsManager.broadcast(userData.id! ,{
-                            type: 'response-header',
-                            id: requestId,
-                            method: req.method,
-                            code: msg.statusCode!,
-                            path: req.url,
-                            headers: msg.headers
-                        })
-            
+
                         pipeline(
                             msg,
                             res,
