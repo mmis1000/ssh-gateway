@@ -12,40 +12,73 @@ import { AddressInfo } from "net";
 const utils = ssh2.utils;
 
 const HANDSHAKE_TIMEOUT = 60 * 1000
+/** time for the disconnect message to go out before the socket is destroyed */
+const DESTROY_DELAY = 1000
+
+export interface SshServerOptions {
+    /** ms between keepalive pings, ssh2 defaults to 15000 */
+    keepaliveInterval?: number
+    /** unanswered pings before the connection is dropped, ssh2 defaults to 3 */
+    keepaliveCountMax?: number
+}
+
+/**
+ * end() only half closes, a peer that vanished (laptop asleep, network gone) never
+ * answers, so the socket stayed open until tcp gave up. Destroy it shortly after.
+ */
+function killConnection(client: Connection) {
+    try {
+        client.end()
+    } catch (err) {}
+    const socket: { destroy(): void } | undefined = (client as any)._sock
+    if (socket) {
+        setTimeout(() => socket.destroy(), DESTROY_DELAY).unref()
+    }
+}
 
 const V1_HEADER = 'v1:'
 
-export function createSshServer(config: Config, store: UserStore, hostKeys: Buffer[]) {
+export function createSshServer(config: Config, store: UserStore, hostKeys: Buffer[], options: SshServerOptions = {}) {
     return new ssh2.Server({
-        hostKeys
-    }, function(client: Connection & { userData?: User }) {
+        hostKeys,
+        keepaliveInterval: options.keepaliveInterval,
+        keepaliveCountMax: options.keepaliveCountMax,
+    } as ssh2.ServerConfig, function(client: Connection & { userData?: User }) {
         console.log('A new ssh client connected!');
 
         const timeoutKiller = setTimeout(() => {
             console.error(`${client.userData?.id ?? '<unknown user>'}: [SSH] not finished handshake in time, considering bad`)
-            client.end()
-            // client.userData?.disconnectAll()
+            killConnection(client)
         }, HANDSHAKE_TIMEOUT)
-        
-        client
-        .on('error', function (err) {
-            if (client.userData) {
-                console.error(`${client.userData.id}: [SSH] ${inspect(err)}`);
-                client.userData.resetConnection()
-                client.userData = undefined
-            } else {
-                console.error(`<unknown user>: ${inspect(err)}`);
+
+        /**
+         * Called on end, close and error. A user often has an older connection that
+         * closes after the client set up a new one, only the connection that holds the
+         * tunnel may tear it down.
+         */
+        const release = (reason: string) => {
+            const userData = client.userData
+            client.userData = undefined
+            if (!userData) return
+
+            console.log(`${userData.id}: [SSH] connection ${reason}`)
+            if (userData.tunnelConnection === client) {
+                userData.tunnelConnection = null
+                userData.disconnectAll()
             }
+        }
+
+        client
+        .on('error', function (err: Error & { level?: string }) {
+            console.error(`${client.userData?.id ?? '<unknown user>'}: [SSH] ${inspect(err)}`);
+            release('failed')
+            // includes keepalive timeouts, where ssh2 only calls end()
+            killConnection(client)
         })
 
         client.on('close', function () {
-            if (client.userData) {
-                console.error(`${client.userData.id}: [SSH] closed`);
-                client.userData.resetConnection()
-                client.userData = undefined
-            } else {
-                console.error(`<unknown user>: closed}`);
-            }
+            clearTimeout(timeoutKiller)
+            release('closed')
         })
         
         client.on('authentication', function(ctx) {
@@ -60,7 +93,6 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                         return ctx.reject();
                     }
 
-                    client.userData = userData;
                     let parsed = utils.parseKey(userData.clientKeyPub!)
 
                     if (parsed instanceof Error) {
@@ -78,6 +110,8 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                     if (ctx.signature) {
                         // hashAlgo is only set for rsa-sha2-*, other key types pick their own hash
                         if (ctx.blob && parsed.verify(ctx.blob, ctx.signature, (ctx as any).hashAlgo) === true) {
+                            // only an authenticated connection is tied to the user
+                            client.userData = userData;
                             ctx.accept();
                         }
                         else {
@@ -151,37 +185,35 @@ Inspect requests at ${config.setupProtocol}://${config.setupHost}:${config.setup
 
                 if (name === 'tcpip-forward') {
                     console.log(`${client.userData!.id}: [SSH] Tunnel started!`);
-                    if (client.userData!.tunnelQueue.isRequesting()) {
-                        console.log(`${client.userData!.id}: [SSH] Is requesting tunnel`);
-                        client.userData!.tunnelQueue.externalResolve([client, info, client.userData!.protocolVersion], () => {
-                            client.end()
+                    const userData = client.userData!
+                    const previous = userData.tunnelConnection
+                    userData.tunnelConnection = client
+                    if (userData.tunnelQueue.isRequesting()) {
+                        console.log(`${userData.id}: [SSH] Is requesting tunnel`);
+                        userData.tunnelQueue.externalResolve([client, info, userData.protocolVersion], () => {
+                            killConnection(client)
                         })
                     } else {
-                        console.log(`${client.userData!.id}: [SSH] Is not requesting tunnel`);
-                        client.userData!.tunnelQueue.request().then((c) => {
-                            console.log('closed')
-                            c[0].end()
-                        }, () => {})
-                        client.userData!.tunnelQueue.reset()
-                        client.userData!.tunnelQueue.externalResolve([client, info, client.userData!.protocolVersion], () => {
-                            client.end()
+                        console.log(`${userData.id}: [SSH] Is not requesting tunnel`);
+                        userData.tunnelQueue.reset()
+                        userData.tunnelQueue.externalResolve([client, info, userData.protocolVersion], () => {
+                            killConnection(client)
                         })
+                    }
+                    // the replaced connection is likely dead, do not wait for it to time out
+                    if (previous && previous !== client) {
+                        console.log(`${userData.id}: [SSH] closing the replaced tunnel connection`);
+                        killConnection(previous)
                     }
                 }
 
-                if (name === 'cancel-tcpip-forward') {
+                if (name === 'cancel-tcpip-forward' && client.userData!.tunnelConnection === client) {
+                    client.userData!.tunnelConnection = null
                     client.userData!.tunnelQueue.reset()
                 }
             });
         }).on('end', function() {
-            if (client.userData) {
-                client.userData.tunnelQueue.reset()
-                client.userData.disconnectAll()
-
-                console.log(`${client.userData.id}: [SSH] Client disconnected`);
-            } else {
-                console.log('Client disconnected');
-            }
+            release('ended')
         });
     })
 }

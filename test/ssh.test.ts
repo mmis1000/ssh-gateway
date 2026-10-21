@@ -9,7 +9,7 @@ import { readdirSync } from "fs";
 import { BaseAgent, Client, ParsedKey, utils } from "ssh2";
 import WebSocket, { WebSocketServer } from "ws";
 import { createHttpServer } from "../src/http_server";
-import { createSshServer } from "../src/ssh_server";
+import { createSshServer, SshServerOptions } from "../src/ssh_server";
 import { createSocksServer } from "../src/socks5_server";
 import { User } from "../src/user";
 import { loadHostKeys } from "../src/keys";
@@ -78,10 +78,12 @@ interface Gateway {
     sshPort: number;
     httpPort: number;
     socksPort: number;
+    /** open ssh connections on the gateway side */
+    sshConnections(): Promise<number>;
     stop(): Promise<void>;
 }
 
-async function startGateway(): Promise<Gateway> {
+async function startGateway(sshOptions: SshServerOptions = {}): Promise<Gateway> {
     const { dir, cleanup } = await createTempDir();
     const saveDir = path.join(dir, "save");
     const legacyDir = path.join(dir, "project");
@@ -92,7 +94,7 @@ async function startGateway(): Promise<Gateway> {
     const hostKeys = await loadHostKeys(store.hostKeyDir, () => {});
 
     const config = createConfig(saveDir);
-    const sshServer = createSshServer(config, store, hostKeys);
+    const sshServer = createSshServer(config, store, hostKeys, sshOptions);
     const sshPort = await new Promise<number>((resolve) => {
         sshServer.listen(0, "127.0.0.1", () => resolve((sshServer.address() as net.AddressInfo).port));
     });
@@ -110,6 +112,7 @@ async function startGateway(): Promise<Gateway> {
         sshPort,
         httpPort,
         socksPort,
+        sshConnections: () => new Promise<number>((resolve) => sshServer.getConnections((_err: unknown, count: number) => resolve(count))),
         async stop() {
             await close(httpServer);
             await new Promise<void>((resolve) => socksServer.close(() => resolve()));
@@ -141,15 +144,20 @@ class ClientSession {
         return new ClientSession(gateway, user, workDir, identity);
     }
 
+    /** run.sh uses one control socket, a second session stands for a respawned client */
+    controlName = "control.sock";
+    /** connect through something else than the gateway port, like a relay */
+    port: number | null = null;
+
     get controlSock() {
-        return path.join(this.workDir, "control.sock");
+        return path.join(this.workDir, this.controlName);
     }
 
     args(extra: string[] = []) {
         return [
             "-F", "/dev/null",
             "-i", this.identity,
-            "-p", String(this.gateway.sshPort),
+            "-p", String(this.port ?? this.gateway.sshPort),
             "-o", "IdentitiesOnly yes",
             "-o", "BatchMode yes",
             "-o", "StrictHostKeyChecking no",
@@ -560,6 +568,100 @@ describe("ssh server", () => {
             expect(results.map((res) => JSON.parse(res.body).url)).toEqual(
                 Array.from({ length: 10 }, (_, i) => `/concurrent/${i}`)
             );
+        });
+    });
+
+    describe("dead connections", () => {
+        let quick: Gateway;
+
+        beforeAll(async () => {
+            // short keepalive, ssh2 defaults to a ping every 15 s and gives up after 3
+            quick = await startGateway({ keepaliveInterval: 200, keepaliveCountMax: 2 });
+        });
+
+        afterAll(() => quick.stop());
+
+        it("releases a connection whose client vanished without closing it", async () => {
+            // a relay that can go silent like a laptop going to sleep: no FIN, no RST
+            const frozen: net.Socket[] = [];
+            let freeze = () => {};
+            const relay = net.createServer((incoming) => {
+                const outgoing = net.connect(quick.sshPort, "127.0.0.1");
+                incoming.pipe(outgoing).pipe(incoming);
+                const swallow = () => {};
+                incoming.on("error", swallow);
+                outgoing.on("error", swallow);
+                freeze = () => {
+                    incoming.unpipe(outgoing);
+                    outgoing.unpipe(incoming);
+                    incoming.removeAllListeners("end").removeAllListeners("close");
+                    outgoing.removeAllListeners("end").removeAllListeners("close");
+                    outgoing.pause();
+                    outgoing.on("end", swallow);
+                    frozen.push(outgoing);
+                };
+            });
+            relay.listen(0, "127.0.0.1");
+            await new Promise((resolve) => relay.once("listening", resolve));
+
+            try {
+                const user = await quick.store.create();
+                const session = await ClientSession.create(quick, user);
+                session.port = (relay.address() as net.AddressInfo).port;
+                await session.connect();
+                expect((await session.register(8080)).stdout).toContain("Client accepted.");
+                expect((await session.forward(8080)).code).toBe(0);
+                expect(await quick.sshConnections()).toBe(1);
+
+                freeze();
+                session.master!.kill("SIGKILL");
+
+                // keepalive notices after about 2 x 200 ms, the socket must then really close
+                await waitFor(async () => ((await quick.sshConnections()) === 0 ? true : undefined), 8000);
+                expect(user.tunnelConnection).toBeNull();
+            } finally {
+                frozen.forEach((socket) => socket.destroy());
+                relay.close();
+            }
+        });
+    });
+
+    describe("reconnecting", () => {
+        let user: User;
+        let target: http.Server;
+        let targetPort: number;
+
+        beforeAll(async () => {
+            target = http.createServer((_req, res) => res.end("still here"));
+            targetPort = await listen(target);
+            user = await gateway.store.create();
+        });
+
+        afterAll(() => close(target));
+
+        it("keeps the new tunnel when the replaced connection closes", async () => {
+            const first = await ClientSession.create(gateway, user);
+            await first.connect();
+            expect((await first.register(targetPort)).stdout).toContain("Client accepted.");
+            expect((await first.forward(targetPort)).code).toBe(0);
+
+            // what run.sh does after it decided the first connection is dead
+            const second = await ClientSession.create(gateway, user);
+            second.controlName = "control-2.sock";
+            await second.connect();
+            expect((await second.register(targetPort)).stdout).toContain("Client accepted.");
+            expect((await second.forward(targetPort)).code).toBe(0);
+
+            // the gateway closes the replaced connection, its close must not take the new tunnel down
+            await waitFor(async () => (first.master!.exitCode !== null ? true : undefined));
+            await new Promise((resolve) => setTimeout(resolve, 500));
+
+            expect(second.master!.exitCode).toBeNull();
+            const res = await request(gateway.httpPort, `${user.domainName}.${HTTP_HOST}`, "/");
+            expect(res.body).toBe("still here");
+
+            await first.disconnect();
+            await second.disconnect();
         });
     });
 

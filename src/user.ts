@@ -41,6 +41,8 @@ class User {
     remoteUser: string | null
     httpPort: number | null
     protocolVersion: Protocol.V0 | Protocol.V1 = Protocol.V0
+    /** the ssh connection that holds the current tunnel, only it may tear the tunnel down */
+    tunnelConnection: Connection | null = null
 
     // sftpState: number
     staticDirectory: string | null
