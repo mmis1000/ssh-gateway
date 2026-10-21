@@ -7,7 +7,8 @@
     "start": "node index.js",
     "dev": "NODE_ENV=development npx vite-node --watch ./src/server.ts",
     "build": "tsc && cd app && npm run build",
-    "test": "vitest run"
+    "test": "vitest run",
+    "migrate": "node dist/migrate_cli.js"
   },
   "engines": {
     "node": ">=22.12.0"
@@ -19,7 +20,6 @@
     "ejs": "^7.0.1",
     "express": "^5.2.1",
     "express-range": "^2.0.1",
-    "fs-extra": "^11.4.1",
     "http-proxy": "^1.16.2",
     "human-readable-ids": "^1.0.3",
     "mime": "^4.1.0",
@@ -41,7 +41,6 @@
   "devDependencies": {
     "@types/ejs": "^3.1.2",
     "@types/express": "^5.0.6",
-    "@types/fs-extra": "^11.0.1",
     "@types/http-proxy": "^1.17.11",
     "@types/node": "^24.19.1",
     "@types/shell-quote": "^1.7.1",

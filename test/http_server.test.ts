@@ -7,7 +7,7 @@ import type { Express } from "express";
 import ssh2_streams from "ssh2-streams";
 import { createHttpServer } from "../src/http_server";
 import WebSocket from "ws";
-import { close, createConfig, createTempDir, HTTP_HOST, listen, openInspector, request, SETUP_HOST } from "./helpers";
+import { close, createConfig, createTempDir, HTTP_HOST, listen, openInspector, openTestStore, request, SETUP_HOST } from "./helpers";
 
 const SFTPStream = ssh2_streams.SFTPStream as any;
 
@@ -22,8 +22,10 @@ describe("http server", () => {
     let cleanup: () => Promise<void>;
 
     beforeAll(async () => {
-        ({ dir: saveDir, cleanup } = await createTempDir());
-        ({ router, server } = await createHttpServer(createConfig(saveDir)));
+        const temp = await createTempDir();
+        cleanup = temp.cleanup;
+        saveDir = path.join(temp.dir, "save");
+        ({ router, server } = await createHttpServer(createConfig(saveDir), await openTestStore(saveDir)));
         port = await listen(server);
     });
 
@@ -69,9 +71,9 @@ describe("http server", () => {
             expect(setup.body).toMatch(/^#! \/bin\/bash/);
             expect(setup.body).not.toMatch(/\*[A-Z_]+\*/);
 
-            const userIds = (await readdir(saveDir)).filter((name) => name !== "domains");
+            const userIds = (await readdir(path.join(saveDir, "users"))).filter((name) => !name.startsWith("."));
             expect(userIds).toHaveLength(1);
-            const info = JSON.parse(await readFile(path.resolve(saveDir, userIds[0], "info.json"), "utf8"));
+            const info = JSON.parse(await readFile(path.resolve(saveDir, "users", userIds[0], "user.json"), "utf8"));
             expect(setup.body).toContain(info.id);
 
             const update = await request(port, SETUP_HOST, "/update", {
@@ -110,7 +112,7 @@ describe("http server", () => {
         });
 
         it("closes with the auth failed code for a wrong password", async () => {
-            const userIds = (await readdir(saveDir)).filter((name) => name !== "domains");
+            const userIds = (await readdir(path.join(saveDir, "users"))).filter((name) => !name.startsWith("."));
             expect(userIds.length).toBeGreaterThan(0);
             const inspector = await openInspector(port, userIds[0], "wrong");
             expect((await inspector.closed).code).toBe(4001);
@@ -140,8 +142,8 @@ describe("http server", () => {
 
         it("fails for unknown user domains", async () => {
             const res = await request(port, `no-such-user.${HTTP_HOST}`, "/index.html");
-            expect(res.status).toBe(500);
-            expect(res.body).toContain("ENOENT");
+            expect(res.status).toBe(404);
+            expect(res.body).toBe("No forward is registered for this domain");
         });
     });
 

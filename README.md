@@ -19,17 +19,26 @@ All without a dedicated client on your computer (only a script that uses `openss
 
 1. Forward a whole domain or subdomain and its subdomain to your app
 2. Properly config the config.json
-3. Generate the `ssh_host_rsa_key` and `ssh_host_rsa_key.pub` properly
-4. Generate the `ssh_host_ecdsa_key` and `ssh_host_ecdsa_key.pub` properly
-5. Generate the `ssh_host_ed25519_key` and `ssh_host_ed25519_key.pub` properly
+3. Start the server
 
-    ```sh
-    ssh-keygen -q -N "" -t rsa -b 4096 -f ./ssh_host_rsa_key
-    ssh-keygen -q -N "" -t ecdsa -f ./ssh_host_ecdsa_key
-    ssh-keygen -q -N "" -t ed25519 -f ./ssh_host_ed25519_key
-    ```
+SSH host keys are generated on the first start and kept with the rest of the data in `saveDir`:
 
-6. Start the server
+```
+save/
+  version                  storage format version
+  host_keys/               ssh_host_{rsa,ecdsa,ed25519}_key(.pub)
+  users/<id>/
+    user.json              id, domain and password
+    client_key(.pub)       key the client script logs in with
+    gateway_key(.pub)      key the gateway logs in to the client sshd with
+```
+
+### Upgrading from older versions
+
+Older versions kept users directly in `save/` and the host keys in the project root.
+The server migrates them on start and moves the old files to `save.backup-v1-<time>/`,
+keeping the host keys so existing clients do not see a changed host key.
+To see what would happen first, run `npm run build && npm run migrate -- --dry-run`.
 
 ## Usage
 

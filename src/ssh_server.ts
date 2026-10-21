@@ -1,13 +1,13 @@
 import { Config } from "./interface";
 
-import fs from 'fs';
 const inspect = require('util').inspect;
 import path from 'path';
 import { parse } from 'shell-quote';
 
 import buffersEqual from 'buffer-equal-constant-time';
 import ssh2, { Connection } from 'ssh2';
-import { Protocol, User, getUserWithName } from "./user"
+import { Protocol, User } from "./user"
+import { UserStore } from "./store"
 import { AddressInfo } from "net";
 const utils = ssh2.utils;
 
@@ -15,7 +15,7 @@ const HANDSHAKE_TIMEOUT = 60 * 1000
 
 const V1_HEADER = 'v1:'
 
-export function createSshServer(config: Config, hostKeys: Buffer[]) {
+export function createSshServer(config: Config, store: UserStore, hostKeys: Buffer[]) {
     return new ssh2.Server({
         hostKeys
     }, function(client: Connection & { userData?: User }) {
@@ -54,14 +54,14 @@ export function createSshServer(config: Config, hostKeys: Buffer[]) {
                 buffersEqual(ctx.key.data, pubKey.public)*/
             ) {
                 let username = ctx.username;
-                getUserWithName(config.saveDir, username)
+                store.findById(username)
                 .then(function (userData) {
                     if (!userData) {
                         return ctx.reject();
                     }
 
                     client.userData = userData;
-                    let parsed = utils.parseKey(userData.privateKey_pub!)
+                    let parsed = utils.parseKey(userData.clientKeyPub!)
 
                     if (parsed instanceof Error) {
                         return ctx.reject(['publickey']);
@@ -186,12 +186,8 @@ Inspect requests at ${config.setupProtocol}://${config.setupHost}:${config.setup
     })
 }
 
-export default function(config: Config) {
-    const server = createSshServer(config, [
-        fs.readFileSync(path.resolve(__dirname, '../ssh_host_rsa_key')),
-        fs.readFileSync(path.resolve(__dirname, '../ssh_host_ecdsa_key')),
-        fs.readFileSync(path.resolve(__dirname, '../ssh_host_ed25519_key')),
-    ])
+export default function(config: Config, store: UserStore, hostKeys: Buffer[]) {
+    const server = createSshServer(config, store, hostKeys)
 
     server.listen(config.sshListen, '0.0.0.0', function() {
         console.log('SSH server listening on port ' + (server.address() as AddressInfo).port);

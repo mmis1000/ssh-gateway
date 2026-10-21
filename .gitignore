@@ -4,3 +4,5 @@ ssh_host_*
 dist/
 config.json
 tsconfig.tsbuildinfo
+save.backup-*/
+save.v2-tmp/

@@ -1,10 +1,11 @@
-import { User, getUserWithName } from './user'
+import { User } from './user'
+import { UserStore } from './store'
 const inspect = require('util').inspect;
 import { createServer } from 'socksv5';
 import socksPasswordAuth from "./socks5_auth_password.js";
 import { Config } from './interface';
 import { Duplex } from 'stream';
-export default function(config: Config) {
+export default function(config: Config, store: UserStore) {
     const srv = createServer(function(info, accept, deny) {
         const stream = accept(true);
         const userInfo = stream.userInfo;
@@ -60,7 +61,7 @@ export default function(config: Config) {
     });
 
     srv.useAuth(socksPasswordAuth(function(stream: Duplex & { user: string, userInfo: User }, user: string, password: string, cb: (success: boolean | Error) => void) {
-        getUserWithName(config.saveDir, user)
+        store.findById(user)
         .then(function (userInfo) {
             stream.user = user;
             stream.userInfo = userInfo;

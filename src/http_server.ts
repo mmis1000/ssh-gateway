@@ -7,7 +7,7 @@ import render from "./template";
 import { promises as fs } from "fs";
 import path from "path";
 import mime from "mime";
-import { createUser, getUserWithName, getUserWithDomain } from"./user";
+import { UserStore } from "./store";
 import ssh2_streams from 'ssh2-streams';
 const SFTPStream = ssh2_streams.SFTPStream;
 import { decodePath, encodePath, getContentType, parseRawData } from "./utils";
@@ -30,7 +30,7 @@ const getId = (name: string) => {
     return current
 }
 
-export async function createHttpServer(config: Config) {
+export async function createHttpServer(config: Config, store: UserStore) {
 
     const router = express();
     router.disable('x-powered-by');
@@ -55,7 +55,7 @@ export async function createHttpServer(config: Config) {
                 const parsed = parseRawData(msg)
                 const username: string = String(parsed[0]) ?? ''
                 const password: string = String(parsed[1]) ?? ''
-                const user = await getUserWithName(config.saveDir, username)
+                const user = await store.findById(username)
                 if (password === user.password) {
                     console.log(`${username}: [HTTP] ws authenticated`)
                     wsManager.addManagedSocket(username, ws)
@@ -139,7 +139,7 @@ export async function createHttpServer(config: Config) {
 
         let id = domain.split('.')[0];
 
-        getUserWithDomain(config.saveDir, id)
+        store.findByDomain(id)
         .then(async function (user) {
             // ensure client exist
             await user.getClient();
@@ -216,7 +216,12 @@ Disallow: /
             } catch (err) {}
         })
 
-        getUserWithDomain(config.saveDir, subdomain)
+        if (!store.getByDomain(subdomain)) {
+            res.status(404).type('text/plain').end('No forward is registered for this domain')
+            return
+        }
+
+        store.findByDomain(subdomain)
         .then(function(userData) {
             if (aborted) {
                 throw new Error('aborted')
@@ -500,7 +505,7 @@ To report abuse, go to ${config.setupProtocol}://${config.setupHost}:${config.se
             }
         }
 
-        createUser(config.saveDir)
+        store.create()
             .then(function(userData) {
                 return Promise.all([userData, templatePromise])
             })
@@ -511,8 +516,8 @@ To report abuse, go to ${config.setupProtocol}://${config.setupHost}:${config.se
                     TARGET_PORT: config.sshPort,
                     TARGET_USER: userData.id!,
                     TARGET_HOST: config.sshHost,
-                    CLIENT_PRIVATE_KEY: userData.privateKey!,
-                    CLIENT_SERVER_KEY: userData.publicKey_pub!,
+                    CLIENT_PRIVATE_KEY: userData.clientKey!,
+                    CLIENT_SERVER_KEY: userData.gatewayKeyPub!,
                     LISTEN_PORT_LOW: config.userListenPortLow,
                     LISTEN_PORT_HIGH: config.userListenPortHigh,
                 }))
@@ -545,7 +550,7 @@ To report abuse, go to ${config.setupProtocol}://${config.setupHost}:${config.se
         const account = decodeURIComponent(str.split(':')[0] ?? '')
         const password = decodeURIComponent(str.split(':')[1] ?? '')
 
-        getUserWithName(config.saveDir, account)
+        store.findById(account)
         .then((userData) => {
             if (userData.password !== password) {
                 throw new Error('not authenticated')
@@ -562,8 +567,8 @@ To report abuse, go to ${config.setupProtocol}://${config.setupHost}:${config.se
                 TARGET_PORT: config.sshPort,
                 TARGET_USER: userData.id!,
                 TARGET_HOST: config.sshHost,
-                CLIENT_PRIVATE_KEY: userData.privateKey!,
-                CLIENT_SERVER_KEY: userData.publicKey_pub!,
+                CLIENT_PRIVATE_KEY: userData.clientKey!,
+                CLIENT_SERVER_KEY: userData.gatewayKeyPub!,
                 LISTEN_PORT_LOW: config.userListenPortLow,
                 LISTEN_PORT_HIGH: config.userListenPortHigh,
             }))
@@ -606,8 +611,8 @@ $ ./run.sh
     return { router, server }
 }
 
-export default async function(config: Config) {
-    const { server } = await createHttpServer(config)
+export default async function(config: Config, store: UserStore) {
+    const { server } = await createHttpServer(config, store)
 
     server.listen(config.httpListen || 8080, "0.0.0.0", function() {
         let addr = server.address() as AddressInfo;

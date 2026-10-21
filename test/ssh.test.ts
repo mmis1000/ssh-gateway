@@ -8,8 +8,11 @@ import { chmod, mkdir, readFile, symlink, writeFile } from "fs/promises";
 import { BaseAgent, Client, ParsedKey, utils } from "ssh2";
 import { createHttpServer } from "../src/http_server";
 import { createSshServer } from "../src/ssh_server";
-import { createUser, User } from "../src/user";
-import { close, createConfig, createTempDir, HTTP_HOST, isEntry, listen, openInspector, request } from "./helpers";
+import { User } from "../src/user";
+import { loadHostKeys } from "../src/keys";
+import { openStore } from "../src/migrate";
+import { UserStore } from "../src/store";
+import { close, createConfig, createTempDir, HTTP_HOST, isEntry, listen, openInspector, request, V1User, writeV1Fixture } from "./helpers";
 
 // Drives the gateway with the real OpenSSH client the same way template/script.template does:
 // a ControlMaster connection, a "v1: register" exec and a "-O forward -R 22:localhost:<port>" reverse tunnel.
@@ -65,6 +68,10 @@ async function waitFor<T>(fn: () => Promise<T | undefined>, timeoutMs = 10000) {
 
 interface Gateway {
     saveDir: string;
+    store: UserStore;
+    /** users and host keys from the storage version 1 data the gateway was started from */
+    v1Users: V1User[];
+    v1HostKeys: Record<string, { private: string; public: string }>;
     sshPort: number;
     httpPort: number;
     stop(): Promise<void>;
@@ -73,19 +80,26 @@ interface Gateway {
 async function startGateway(): Promise<Gateway> {
     const { dir, cleanup } = await createTempDir();
     const saveDir = path.join(dir, "save");
-    const hostKey = path.join(dir, "host_key");
-    await keygen(hostKey);
+    const legacyDir = path.join(dir, "project");
+    const { users: v1Users, hostKeys: v1HostKeys } = await writeV1Fixture(saveDir, legacyDir);
+
+    // start like server.ts does: migrate, then load host keys
+    const store = await openStore(saveDir, legacyDir, () => {});
+    const hostKeys = await loadHostKeys(store.hostKeyDir, () => {});
 
     const config = createConfig(saveDir);
-    const sshServer = createSshServer(config, [await readFile(hostKey)]);
+    const sshServer = createSshServer(config, store, hostKeys);
     const sshPort = await new Promise<number>((resolve) => {
         sshServer.listen(0, "127.0.0.1", () => resolve((sshServer.address() as net.AddressInfo).port));
     });
-    const { server: httpServer } = await createHttpServer(config);
+    const { server: httpServer } = await createHttpServer(config, store);
     const httpPort = await listen(httpServer);
 
     return {
         saveDir,
+        store,
+        v1Users,
+        v1HostKeys,
         sshPort,
         httpPort,
         async stop() {
@@ -112,7 +126,7 @@ class ClientSession {
         await mkdir(workDir, { recursive: true });
         if (!identity) {
             identity = path.join(workDir, "id_rsa");
-            await writeFile(identity, user.privateKey!);
+            await writeFile(identity, user.clientKey!);
             await chmod(identity, 0o600);
         }
         return new ClientSession(gateway, user, workDir, identity);
@@ -166,6 +180,39 @@ class ClientSession {
     }
 }
 
+/**
+ * Log in presenting the user's real public key but a signature that does not match,
+ * resolves with the error level, or "authenticated" if the server accepted it.
+ */
+async function loginWithForgedSignature(gateway: Gateway, user: User) {
+    const publicKey = utils.parseKey(user.clientKeyPub!) as ParsedKey;
+    // well formed signatures that do not match the data, ecdsa ones are DER (r = 1, s = 1)
+    const signature = publicKey.type === "ssh-ed25519" ? Buffer.alloc(64, 1) : Buffer.from("3006020101020101", "hex");
+    class ForgingAgent extends BaseAgent {
+        getIdentities(cb: (err: Error | undefined, keys?: ParsedKey[]) => void) {
+            cb(undefined, [publicKey]);
+        }
+        sign(_key: ParsedKey, _data: Buffer, ...args: any[]) {
+            args[args.length - 1](undefined, signature);
+        }
+    }
+
+    const client = new Client();
+    const result = await new Promise<string>((resolve) => {
+        client.on("ready", () => resolve("authenticated"));
+        client.on("error", (err: Error & { level?: string }) => resolve(err.level ?? err.message));
+        client.connect({
+            host: "127.0.0.1",
+            port: gateway.sshPort,
+            username: user.id!,
+            agent: new ForgingAgent(),
+            readyTimeout: 10000,
+        });
+    });
+    client.end();
+    return result;
+}
+
 describe("ssh server", () => {
     let gateway: Gateway;
 
@@ -175,11 +222,38 @@ describe("ssh server", () => {
 
     afterAll(() => gateway.stop());
 
+    describe("data migrated from storage version 1", () => {
+        it("serves the same host keys as before the migration", async () => {
+            const res = await run("ssh-keyscan", ["-p", String(gateway.sshPort), "-t", "rsa,ecdsa,ed25519", "127.0.0.1"]);
+            const served = res.stdout.trim().split("\n").map((line) => line.split(" ").slice(1, 3).join(" ")).sort();
+            const before = Object.values(gateway.v1HostKeys).map((pair) => pair.public.split(" ").slice(0, 2).join(" ")).sort();
+            expect(served).toHaveLength(3);
+            expect(served).toEqual(before);
+        });
+
+        it("lets a migrated user log in with the original key", async () => {
+            const original = gateway.v1Users[0];
+            const user = gateway.store.getById(original.id)!;
+            expect(user.clientKey).toBe(original.clientKey);
+
+            const session = await ClientSession.create(gateway, user);
+            const res = await session.register(8080);
+            expect(res.stdout).toContain("Client accepted.");
+            expect(res.stdout).toContain(`http://${original.domain}.${HTTP_HOST}:80/`);
+        });
+
+        it("rejects a forged signature for a migrated ecdsa key", async () => {
+            const user = gateway.store.getById(gateway.v1Users[1].id)!;
+            expect(user.clientKeyPub).toMatch(/^ecdsa-sha2-nistp256 /);
+            expect(await loginWithForgedSignature(gateway, user)).toBe("client-authentication");
+        });
+    });
+
     describe("authentication", () => {
         let user: User;
 
         beforeAll(async () => {
-            user = await createUser(gateway.saveDir);
+            user = await gateway.store.create();
         });
 
         it("accepts the generated client key", async () => {
@@ -199,33 +273,7 @@ describe("ssh server", () => {
         });
 
         it("rejects a valid public key with a forged signature", async () => {
-            // knowing the public key must not be enough, the signature has to be checked
-            const publicKey = utils.parseKey(user.privateKey_pub!) as ParsedKey;
-            class ForgingAgent extends BaseAgent {
-                getIdentities(cb: (err: Error | undefined, keys?: ParsedKey[]) => void) {
-                    cb(undefined, [publicKey]);
-                }
-                sign(_key: ParsedKey, _data: Buffer, ...args: any[]) {
-                    const cb = args[args.length - 1];
-                    // well formed ECDSA signature (DER sequence of r = 1, s = 1) that does not match the data
-                    cb(undefined, Buffer.from("3006020101020101", "hex"));
-                }
-            }
-
-            const client = new Client();
-            const result = await new Promise<string>((resolve) => {
-                client.on("ready", () => resolve("authenticated"));
-                client.on("error", (err: Error & { level?: string }) => resolve(err.level ?? err.message));
-                client.connect({
-                    host: "127.0.0.1",
-                    port: gateway.sshPort,
-                    username: user.id!,
-                    agent: new ForgingAgent(),
-                    readyTimeout: 10000,
-                });
-            });
-            client.end();
-            expect(result).toBe("client-authentication");
+            expect(await loginWithForgedSignature(gateway, user)).toBe("client-authentication");
         });
 
         it("rejects unknown users", async () => {
@@ -243,7 +291,7 @@ describe("ssh server", () => {
         let session: ClientSession;
 
         beforeAll(async () => {
-            user = await createUser(gateway.saveDir);
+            user = await gateway.store.create();
             session = await ClientSession.create(gateway, user);
         });
 
@@ -309,7 +357,7 @@ describe("ssh server", () => {
             });
             const targetPort = await listen(target);
 
-            user = await createUser(gateway.saveDir);
+            user = await gateway.store.create();
             session = await ClientSession.create(gateway, user);
             await session.connect();
             expect((await session.register(targetPort)).stdout).toContain("Client accepted.");
@@ -425,7 +473,7 @@ describe("ssh server", () => {
             request(gateway.httpPort, host(), urlPath, { headers });
 
         beforeAll(async () => {
-            user = await createUser(gateway.saveDir);
+            user = await gateway.store.create();
             session = await ClientSession.create(gateway, user);
 
             // the files to serve, with a secret next to (not inside) the served directory
@@ -445,7 +493,7 @@ describe("ssh server", () => {
             const sshdDir = path.join(session.workDir, "sshd");
             await mkdir(sshdDir);
             await keygen(path.join(sshdDir, "ssh_host_ed25519_key"));
-            await writeFile(path.join(sshdDir, "authorized_keys"), user.publicKey_pub!);
+            await writeFile(path.join(sshdDir, "authorized_keys"), user.gatewayKeyPub!);
             await chmod(path.join(sshdDir, "authorized_keys"), 0o600);
             await writeFile(path.join(sshdDir, "sshd_config"), [
                 `Port ${sshdPort}`,
