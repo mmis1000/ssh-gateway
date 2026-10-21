@@ -163,6 +163,8 @@ export async function createHttpServer(config: Config, store: UserStore) {
                                     return cb(err);
                                 }
                                 console.log(`${userData.id}: [HTTP] Forward ${req.method} http connection established at ${req.url} of ${userData.domainName}`);
+                                // the visitor may vanish without the proxy ending the channel
+                                socket.once('close', () => stream!.destroy());
                                 cb(null, asSocket(stream!));
                             })
                             return undefined
@@ -229,6 +231,15 @@ Disallow: /
             if (userData.httpPort !== 0) {
                 userData.getConnectionAgent()
                 .then(function(agent) {
+                    // the app may keep the connection alive and node does not end a socket it got
+                    // from createConnection, so close the channel once the visitor got the response
+                    let channel: Duplex | null = null
+                    let finished = false
+                    res.once('close', function() {
+                        finished = true
+                        channel?.destroy()
+                    })
+
                     let client = http.request({
                         createConnection: function(opts, cb) {
                             agent.createConnection(function(err, stream) {
@@ -237,6 +248,11 @@ Disallow: /
                                     return cb(err, null as never);
                                 }
                                 userData.clearSuicideTimer()
+                                channel = stream!
+                                if (finished) {
+                                    stream!.destroy()
+                                    return cb(new Error('visitor disconnected'), null as never);
+                                }
                                 console.log(`${userData.id}: [HTTP] Forward ${req.method} http connection established at ${req.originalUrl} of ${userData.domainName}`);
                                 cb(null as never, asSocket(stream!));
                             })
@@ -253,6 +269,7 @@ Disallow: /
                     client.on('error', function(err) {
                         res.status(500).end(inspect(err))
                     })
+
 
                     pipeline(
                         req,

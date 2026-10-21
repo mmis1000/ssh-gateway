@@ -5,6 +5,7 @@ import os from "os";
 import path from "path";
 import { ChildProcess, execFile, spawn } from "child_process";
 import { chmod, mkdir, readFile, symlink, writeFile } from "fs/promises";
+import { readdirSync } from "fs";
 import { BaseAgent, Client, ParsedKey, utils } from "ssh2";
 import WebSocket, { WebSocketServer } from "ws";
 import { createHttpServer } from "../src/http_server";
@@ -341,6 +342,13 @@ describe("ssh server", () => {
             target = http.createServer((req, res) => {
                 const chunks: Buffer[] = [];
                 req.on("data", (chunk) => chunks.push(chunk));
+                if (req.url === "/slow") {
+                    res.writeHead(200, { "Content-Type": "text/plain" });
+                    res.write("first chunk");
+                    const timer = setInterval(() => res.write("."), 50);
+                    res.on("close", () => clearInterval(timer));
+                    return;
+                }
                 req.on("end", () => {
                     targetHits.push(`${req.method} ${req.url}`);
                     const status = /^\/status\/(\d+)$/.exec(req.url!);
@@ -455,9 +463,10 @@ describe("ssh server", () => {
 
         it("proxies websockets through the tunnel", async () => {
             const echo = new WebSocketServer({ noServer: true });
-            target.on("upgrade", (req, socket, head) => {
+            const onUpgrade = (req: http.IncomingMessage, socket: any, head: Buffer) => {
                 echo.handleUpgrade(req, socket, head, (ws) => ws.on("message", (data) => ws.send(`echo: ${data}`)));
-            });
+            };
+            target.on("upgrade", onUpgrade);
 
             const ws = new WebSocket(`ws://127.0.0.1:${gateway.httpPort}/socket`, { headers: { Host: host() } });
             try {
@@ -470,8 +479,71 @@ describe("ssh server", () => {
                 expect(reply).toBe("echo: hello");
             } finally {
                 ws.close();
+                target.off("upgrade", onUpgrade);
                 echo.close();
             }
+        });
+
+        it("closes forwarded channels after each request", async () => {
+            // every request opens a forwarded channel, which the ssh client turns into a
+            // socket to the local app; macOS allows only 256 open files per process by default
+            const sshFds = () => readdirSync(`/proc/${session.master!.pid}/fd`).length;
+            const targetConnections = () => new Promise<number>((resolve) => target.getConnections((_, count) => resolve(count)));
+
+            await request(gateway.httpPort, host(), "/warmup");
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            const before = { fds: sshFds(), connections: await targetConnections() };
+
+            for (let i = 0; i < 60; i++) {
+                const res = await request(gateway.httpPort, host(), `/leak/${i}`);
+                expect(res.status).toBe(200);
+            }
+
+            // visitors that go away before the response finished
+            for (let i = 0; i < 10; i++) {
+                await new Promise<void>((resolve) => {
+                    const req = http.request({ host: "127.0.0.1", port: gateway.httpPort, path: "/slow", headers: { Host: host() } }, (res) => {
+                        res.once("data", () => {
+                            if (i % 2) req.destroy();
+                            else req.socket!.resetAndDestroy();
+                            resolve();
+                        });
+                    });
+                    req.on("error", () => {});
+                    req.end();
+                });
+            }
+
+            // websockets opened and closed from either side
+            const echo = new WebSocketServer({ noServer: true });
+            const onUpgrade = (req: http.IncomingMessage, socket: any, head: Buffer) => {
+                echo.handleUpgrade(req, socket, head, (ws) => ws.on("message", (data) => {
+                    if (String(data) === "bye") ws.close();
+                    else ws.send(String(data));
+                }));
+            };
+            target.on("upgrade", onUpgrade);
+            for (let i = 0; i < 20; i++) {
+                const ws = new WebSocket(`ws://127.0.0.1:${gateway.httpPort}/socket`, { headers: { Host: host() } });
+                await new Promise((resolve, reject) => {
+                    ws.once("open", resolve);
+                    ws.once("error", reject);
+                });
+                const closed = new Promise((resolve) => ws.once("close", resolve));
+                if (i % 3 === 0) ws.send("bye");
+                else if (i % 3 === 1) ws.terminate();
+                // a visitor whose connection is reset
+                else (ws as any)._socket.resetAndDestroy();
+                await closed;
+            }
+            target.off("upgrade", onUpgrade);
+            echo.close();
+
+            await new Promise((resolve) => setTimeout(resolve, 1000));
+            const after = { fds: sshFds(), connections: await targetConnections() };
+
+            expect(after.fds - before.fds).toBeLessThan(5);
+            expect(after.connections - before.connections).toBeLessThan(5);
         });
 
         it("handles concurrent requests", async () => {

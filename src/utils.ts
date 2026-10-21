@@ -254,6 +254,26 @@ export function encodePath(str: string) {
 }
 const SOCKET_ONLY_METHODS = ['setTimeout', 'setNoDelay', 'setKeepAlive', 'ref', 'unref'] as const
 
+interface ClosableChannel extends NodeJS.EventEmitter {
+    close?: () => void
+}
+
+/**
+ * Send CHANNEL_CLOSE once both directions sent EOF. ssh2 only sends EOF when a
+ * channel it opened as the client side finishes, and OpenSSH keeps the channel, and
+ * the socket it opened for it, until the close, so every forwarded connection leaked.
+ */
+export function closeWhenDone<T extends ClosableChannel>(channel: T) {
+    let remoteEnded = false
+    let localFinished = false
+    const maybeClose = () => {
+        if (remoteEnded && localFinished) channel.close?.()
+    }
+    channel.once('end', () => { remoteEnded = true; maybeClose() })
+    channel.once('finish', () => { localFinished = true; maybeClose() })
+    return channel
+}
+
 /**
  * Let an ssh channel stand in for a net.Socket in http.request and http.Agent,
  * which call socket only methods on the connection. The channel has no timeouts or
@@ -266,6 +286,7 @@ export function asSocket<T extends object>(stream: T) {
             target[name] = function (this: T) { return this }
         }
     }
+    closeWhenDone(target)
     return stream as T & import('net').Socket
 }
 
