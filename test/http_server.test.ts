@@ -4,13 +4,12 @@ import { existsSync } from "fs";
 import { readdir, readFile } from "fs/promises";
 import path from "path";
 import type { Express } from "express";
-import ssh2_streams from "ssh2-streams";
 import { createHttpServer } from "../src/http_server";
+import { folderView } from "../src/listing";
 import { loadHostKeys } from "../src/keys";
 import WebSocket from "ws";
 import { close, createConfig, createTempDir, HTTP_HOST, listen, openInspector, openTestStore, request, SETUP_HOST } from "./helpers";
 
-const SFTPStream = ssh2_streams.SFTPStream as any;
 
 const basicAuth = (account: string, password: string) =>
     `Basic ${Buffer.from(`${account}:${password}`).toString("base64")}`;
@@ -108,8 +107,8 @@ describe("http server", () => {
             expect(setup.body).toContain('-a -x -o "IdentitiesOnly yes"');
             expect(setup.body).toContain('-o "StrictHostKeyChecking yes"');
             expect(setup.body).not.toContain("StrictHostKeyChecking no");
-            expect(setup.body).toContain('"v7: register');
-            expect(setup.body).toContain('"v7: check"');
+            expect(setup.body).toContain('"v8: register');
+            expect(setup.body).toContain('"v8: check"');
             expect(setup.body).toContain("ForceCommand internal-sftp -R");
             expect(setup.body).toContain("PermitOpen localhost:* 127.0.0.1:*");
 
@@ -257,52 +256,62 @@ describe("http server", () => {
     });
 
     describe("folder view", () => {
-        const entry = (filename: string, mode: number) => ({
-            filename,
-            attrs: new SFTPStream.Stats({ mode }),
+        const entry = (filename: string, mode: number, size = 0) => ({ filename, attrs: { mode, size, mtime: 1760000000 } });
+
+        const renderFolder = (requestPath: string, files: ReturnType<typeof entry>[]) =>
+            new Promise<string>((resolve, reject) => {
+                const view = folderView(requestPath, files, { siteName: "brave-otter-42-k3x9qz", showHidden: false });
+                router.render("folder", view, (err, html) => (err ? reject(err) : resolve(html!)));
+            });
+
+        it("renders breadcrumbs, a parent link and one row per entry", async () => {
+            const html = await renderFolder("/music/live set/", [
+                entry("song.mp3", 0o100644, 5_100_000),
+                entry("sub dir", 0o40755),
+                entry("clip.mp4", 0o100644),
+                entry("readme", 0o100644),
+                entry("latest", 0o120777),
+            ]);
+
+            expect(html).toContain('<li><a href="/">brave-otter-42-k3x9qz</a></li>');
+            expect(html).toContain('<li><a href="/music/">music</a></li>');
+            expect(html).toContain('<li aria-current="page">live set</li>');
+            expect(html).toContain('<a class="row folder" href="/music/">');
+
+            const rows = [...html.matchAll(/<a class="row (\w+)" href="([^"]+)"[^>]*>\s*<span class="name"><svg aria-hidden="true"><use href="#i-(\w+)"\/><\/svg><span>([^<]+)<\/span>/g)]
+                .map(([, kind, href, icon, name]) => [name, kind, icon, href]);
+            expect(rows).toEqual([
+                ["Parent folder", "folder", "parent", "/music/"],
+                ["sub dir", "folder", "folder", "/music/live%20set/sub%20dir/"],
+                ["clip.mp4", "file", "video", "/music/live%20set/clip.mp4"],
+                ["latest", "link", "link", "/music/live%20set/latest"],
+                ["readme", "file", "file", "/music/live%20set/readme"],
+                ["song.mp3", "file", "audio", "/music/live%20set/song.mp3"],
+            ]);
+            expect(html).toContain('<span class="size">4.9 MB</span>');
+            // a symlink is told apart from a file by more than its icon, and only it gets the tag
+            expect(html).toMatch(/title="Symbolic link[^"]*">\s*<span class="name">.*<span>latest<\/span><span class="tag">symlink<\/span>/);
+            expect(html.match(/class="tag"/g)).toHaveLength(1);
+            expect(html).toContain('<time datetime="2025-10-09T08:53:20.000Z">2025-10-09 08:53 UTC</time>');
         });
 
-        const renderFolder = (locals: object) =>
-            new Promise<string>((resolve, reject) => {
-                router.render("folder", locals, (err, html) => (err ? reject(err) : resolve(html!)));
-            });
-
-        it("renders the listing with the app locals", async () => {
-            const html = await renderFolder({
-                path: "/music/live set/",
-                files: [
-                    entry("song.mp3", 0o100644),
-                    entry("sub dir", 0o40755),
-                    entry("clip.mp4", 0o100644),
-                    entry("readme", 0o100644),
-                    entry("latest", 0o120777),
-                ],
-            });
-
-            expect(html).toContain('<a href=/music/live%20set/>live set &gt;</a>');
-            expect(html).toContain('href="/music/live%20set/sub%20dir"');
-            expect(html).toContain('<a href="../"');
-
-            const icons = [...html.matchAll(/material-icons">(\w+)<\/i> ([^\n<]+)/g)]
-                .map(([, icon, name]) => [name.trim(), icon]);
-            expect(icons).toEqual([
-                ["../", "arrow_back"],
-                ["latest", "link"],
-                ["sub dir", "folder"],
-                ["clip.mp4", "video_library"],
-                ["readme", "insert_drive_file"],
-                ["song.mp3", "audiotrack"],
-            ]);
+        it("has no parent link at the top and says when a folder is empty", async () => {
+            const html = await renderFolder("/", []);
+            expect(html).toContain('<li aria-current="page">brave-otter-42-k3x9qz</li>');
+            expect(html).not.toContain("Parent folder");
+            expect(html).toContain("This folder is empty.");
         });
 
         it("escapes file names", async () => {
-            const html = await renderFolder({
-                path: "/",
-                files: [entry("<script>alert(1)</script>", 0o100644)],
-            });
+            const html = await renderFolder("/", [entry("<script>alert(1)</script>", 0o100644)]);
             expect(html).not.toContain("<script>alert(1)</script>");
             expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
-            expect(html).not.toContain('<a href="../"');
+        });
+
+        it("is self contained, it is served on user domains", async () => {
+            const html = await renderFolder("/", [entry("a.txt", 0o100644)]);
+            expect(html).not.toMatch(/<(script|link)[^>]+(src|href)=/);
+            expect(html).not.toMatch(/https?:\/\//);
         });
     });
 });

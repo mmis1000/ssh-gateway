@@ -54,6 +54,8 @@ class User {
     publicAuth: PublicAuth | null = null
     /** folders with an index.html serve it instead of the file list, off with run.sh --list */
     serveIndex = true
+    /** names starting with a dot are hidden and not served, on with run.sh --dotfiles */
+    serveDotfiles = false
     /** the ssh connection that holds the current tunnel, only it may tear the tunnel down */
     tunnelConnection: Connection | null = null
 

@@ -1,113 +1,147 @@
 <!DOCTYPE html>
-<html>
-
+<html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width">
-  <title>
-    <%= path %>
-  </title>
-  <link href="https://cdnjs.cloudflare.com/ajax/libs/normalize/3.0.2/normalize.min.css" rel="stylesheet" type="text/css" />
-
-  <!-- Compiled and minified CSS -->
-  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/materialize/0.100.2/css/materialize.min.css">
-  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title><%= title %></title>
   <style>
-    body, html {
-      background: #fcfcfc
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1d2330;
+      --muted: #5f6879;
+      --border: #e2e5eb;
+      --hover: #f1f4f9;
+      --accent: #2f6fde;
+      --folder: #2f6fde;
+      --link: #0e8a8a;
+      --link-soft: #e3f4f4;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color-scheme: light;
     }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #15171c;
+        --panel: #1c1f26;
+        --text: #e3e6ec;
+        --muted: #9aa2b3;
+        --border: #2c313b;
+        --hover: #232733;
+        --accent: #7aa7ff;
+        --folder: #7aa7ff;
+        --link: #4fd1c5;
+        --link-soft: #173232;
+        color-scheme: dark;
+      }
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 15px/1.5 Inter, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    .wrap { width: min(960px, 100%); margin: 0 auto; padding: 0 16px; }
 
-    .collection-item i {
-      vertical-align: bottom;
+    header { padding: 28px 0 16px; }
+    nav ol { display: flex; flex-wrap: wrap; align-items: center; margin: 0; padding: 0; list-style: none; font-size: 20px; font-weight: 600; }
+    nav li { display: flex; align-items: center; min-width: 0; overflow-wrap: anywhere; }
+    nav li + li::before { content: '/'; margin: 0 8px; color: var(--muted); font-weight: 400; }
+    nav a { color: var(--accent); text-decoration: none; }
+    nav a:hover { text-decoration: underline; }
+
+    .listing { margin-bottom: 40px; overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+    .row {
+      display: grid; grid-template-columns: minmax(0, 1fr) 90px 150px; gap: 16px; align-items: center;
+      padding: 9px 16px; border-top: 1px solid var(--border);
+      color: inherit; text-decoration: none;
+    }
+    .row:first-child { border-top: none; }
+    a.row:hover, a.row:focus-visible { background: var(--hover); outline: none; }
+    .head { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    .name { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .name span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+    .name svg { flex: none; width: 20px; height: 20px; color: var(--muted); }
+    .folder .name { font-weight: 600; }
+    .folder .name svg { color: var(--folder); }
+    .link .name svg { color: var(--link); }
+    .tag {
+      flex: none; padding: 1px 7px; border-radius: 999px;
+      background: var(--link-soft); color: var(--link);
+      font-size: 11px; font-weight: 600; letter-spacing: 0.02em;
+    }
+    .size, .date { color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+    .size { text-align: right; }
+    .empty { padding: 28px 16px; color: var(--muted); text-align: center; }
+
+    @media (max-width: 600px) {
+      header { padding-top: 20px; }
+      nav ol { font-size: 17px; }
+      .row { grid-template-columns: minmax(0, 1fr) auto; }
+      .date { display: none; }
     }
   </style>
 </head>
-
 <body>
+  <svg width="0" height="0" style="position: absolute" aria-hidden="true">
+    <defs>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path fill="currentColor" d="M3 6.5A2.5 2.5 0 0 1 5.5 4h3.6a2 2 0 0 1 1.4.6L12 6h6.5A2.5 2.5 0 0 1 21 8.5v9a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 17.5z"/></symbol>
+      <symbol id="i-parent" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M10 9 5 14l5 5M5 14h9a5 5 0 0 0 5-5V4"/></symbol>
+      <symbol id="i-file" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v5h5"/></symbol>
+      <symbol id="i-text" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v5h5M8.5 13h7M8.5 17h5"/></symbol>
+      <symbol id="i-image" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 5h16v14H4zM4 16l5-5 4 4 2-2 5 5"/><circle cx="15.5" cy="9" r="1.5" fill="currentColor"/></symbol>
+      <symbol id="i-video" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 6h11v12H4zM15 10l5-3v10l-5-3"/></symbol>
+      <symbol id="i-audio" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="16.5" cy="16" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
+      <symbol id="i-archive" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 4h16v4H4zM5 8h14v12H5zM10 12h4"/></symbol>
+      <symbol id="i-pdf" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v5h5"/><text x="12" y="17.5" fill="currentColor" font-family="system-ui, sans-serif" font-size="6" font-weight="700" text-anchor="middle">PDF</text></symbol>
+      <symbol id="i-link" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
+    </defs>
+  </svg>
 
-  <nav>
-    <div class="nav-wrapper">
-      <a href="#" class="right brand-logo">Files</a>
+  <div class="wrap">
+    <header>
+      <nav aria-label="Folder path">
+        <ol>
+          <% breadcrumbs.forEach(function (crumb, index) { %>
+            <% if (index === breadcrumbs.length - 1) { %>
+              <li aria-current="page"><%= crumb.name %></li>
+            <% } else { %>
+              <li><a href="<%= crumb.href %>"><%= crumb.name %></a></li>
+            <% } %>
+          <% }) %>
+        </ol>
+      </nav>
+    </header>
 
-      <ul id="nav-mobile" class="left hide-on-med-and-down">
-        <li><a href="/">/</a></li>
-        <% 
-          var temp = path.split('/');
-          
-          if (temp[1] === '') {
-            temp = []
-          } else {
-            temp = temp.slice(1, temp.length - 1);
-          }
-          
-          for (let i = 0; i < temp.length; i++) {
-        %>
-          <li><a href=<%= encodePath("/" + temp.slice(0, i + 1).join('/') + '/') %>><%= temp[i] %> &gt;</a></li>
-        <% } %>
-      </ul>
-    </div>
-  </nav>
-
-  <div class="container">
-    <div class="collection">
-      <% if (path !== '/') { %>
-        <a href="../" class="collection-item light-blue-text text-darken-4">
-          <i class="material-icons">arrow_back</i> ../
+    <main class="listing">
+      <div class="row head" aria-hidden="true"><span>Name</span><span class="size">Size</span><span class="date">Modified</span></div>
+      <% if (parent) { %>
+        <a class="row folder" href="<%= parent %>">
+          <span class="name"><svg aria-hidden="true"><use href="#i-parent"/></svg><span>Parent folder</span></span>
+          <span class="size"></span><span class="date"></span>
         </a>
       <% } %>
-      
-      
-      <% 
-        files.sort(function (a, b) {
-          var aTypeOrder = a.attrs.isSymbolicLink() ? 2 : a.attrs.isDirectory() ? 1 : 0;
-          var bTypeOrder = b.attrs.isSymbolicLink() ? 2 : b.attrs.isDirectory() ? 1 : 0;
-          
-          if (aTypeOrder != bTypeOrder) {
-            return bTypeOrder - aTypeOrder;
-          }
-          
-          return a.filename > b.filename ? 1 : -1;
-        })
-        
-        for (let i = 0; i < files.length; i++) {
-          let file = files[i];
-          let ext = (/.\.([^\.]+)$/).exec(file.filename);
-          ext = ext ? ext[1] : null;
-          
-          let contentType = ext ? (mime.getType(ext) || 'application/octet-stream') : 'application/octet-stream';
-          let icon = null;
-          let textColor = null;
-          if (file.attrs.isSymbolicLink()) {
-            icon = 'link'
-            textColor = 'cyan-text text-accent-4'
-          } else if (file.attrs.isDirectory()) {
-            icon = 'folder'
-            textColor = 'light-blue-text text-darken-4'
-          } else {
-            textColor = 'grey-text text-darken-4'
-            if (contentType.match(/^audio/)) {
-              icon = 'audiotrack'
-            } else if (contentType.match(/^video/)) {
-              icon = 'video_library'
-            } else {
-              icon = 'insert_drive_file'
-            }
-          }
-      %>
-        
-        <a href="<%= encodePath(path + file.filename) %>" class="collection-item <%= textColor %>">
-          <i class="material-icons"><%= icon %></i> <%= file.filename %>
+      <% entries.forEach(function (entry) { %>
+        <a class="row <%= entry.kind %>" href="<%= entry.href %>"<% if (entry.kind === 'link') { %> title="Symbolic link, opens what it points to"<% } %>>
+          <span class="name"><svg aria-hidden="true"><use href="#i-<%= entry.icon %>"/></svg><span><%= entry.name %></span><% if (entry.kind === 'link') { %><span class="tag">symlink</span><% } %></span>
+          <span class="size"><%= entry.sizeText %></span>
+          <span class="date"><% if (entry.modified) { %><time datetime="<%= entry.modified %>"><%= entry.modifiedText %></time><% } %></span>
         </a>
+      <% }) %>
+      <% if (entries.length === 0) { %>
+        <div class="empty">This folder is empty.</div>
       <% } %>
-    </div>
+    </main>
   </div>
 
-  <script type="text/javascript" src="https://code.jquery.com/jquery-3.2.1.min.js"></script>
-  <!-- Compiled and minified JavaScript -->
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/materialize/0.100.2/js/materialize.min.js"></script>
-
   <script>
+    // dates are sent in UTC, show them in the visitor's own time zone
+    var format = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    document.querySelectorAll('time[datetime]').forEach(function (time) {
+      time.textContent = format.format(new Date(time.getAttribute('datetime')))
+    })
   </script>
 </body>
-
 </html>

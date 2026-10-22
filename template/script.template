@@ -11,6 +11,8 @@ and whether visitors need a password, or offers to use the answers from last tim
   -d, --dir DIR     share the directory DIR as a static site
   -l, --list        with --dir, always show the file list of folders, also when they have
                     an index.html, which is shown instead otherwise
+      --dotfiles    with --dir, also share names starting with a dot, like .git and .env,
+                    which are hidden and refused otherwise
   -a, --auth USER:PASSWORD
                     ask visitors for this user name and password. Other users of this
                     computer can see options in ps, set GATEWAY_AUTH=USER:PASSWORD instead
@@ -29,6 +31,7 @@ STATIC_DIRECTORY=""
 PUBLIC_AUTH="${GATEWAY_AUTH:-}"
 ASKED_WHAT_TO_SHARE=0
 SHOW_LIST=0
+SHARE_DOTFILES=0
 USE_LAST=0
 ASSUME_YES=0
 while [ $# -gt 0 ]
@@ -43,6 +46,7 @@ do
             [ $# -ge 2 ] || { echo "$1 needs a directory, see --help" >&2; exit 2; }
             STATIC_DIRECTORY="$2"; shift;;
         -l|--list) SHOW_LIST=1;;
+        --dotfiles) SHARE_DOTFILES=1;;
         -r|--last) USE_LAST=1;;
         -a|--auth)
             [ $# -ge 2 ] || { echo "$1 needs USER:PASSWORD, see --help" >&2; exit 2; }
@@ -332,6 +336,7 @@ ANSWERS_FILE="$WORKDIR/answers"
 SAVED_PORT=""
 SAVED_DIR=""
 SAVED_LIST=0
+SAVED_DOTFILES=0
 SAVED_AUTH=""
 [ -f "$ANSWERS_FILE" ] && source "$ANSWERS_FILE"
 valid_port "$SAVED_PORT" || SAVED_PORT=""
@@ -345,6 +350,7 @@ function use_saved_answers {
         FORWARD_PORT="$SAVED_PORT"
     fi
     [ "$SAVED_LIST" == 1 ] && SHOW_LIST=1
+    [ "$SAVED_DOTFILES" == 1 ] && SHARE_DOTFILES=1
     [ -z "$PUBLIC_AUTH" ] && PUBLIC_AUTH="$SAVED_AUTH"
     # the notice was accepted by the run that saved them
     ASSUME_YES=1
@@ -355,6 +361,7 @@ function describe_saved_answers {
     then
         printf 'share folder %s' "$SAVED_DIR"
         [ "$SAVED_LIST" == 1 ] && printf ', file lists'
+        [ "$SAVED_DOTFILES" == 1 ] && printf ', hidden files too'
     else
         printf 'share port %s' "$SAVED_PORT"
     fi
@@ -460,6 +467,7 @@ fi
         then
             printf 'SAVED_DIR=%q\n' "$STATIC_DIRECTORY"
             printf 'SAVED_LIST=%q\n' "$SHOW_LIST"
+            printf 'SAVED_DOTFILES=%q\n' "$SHARE_DOTFILES"
         fi
         if [ -n "$PUBLIC_AUTH" ]
         then
@@ -522,8 +530,9 @@ else
 fi
 
 function register {
-    local command="v7: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
+    local command="v8: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
     [ $SHOW_LIST == 1 ] && command="$command --list"
+    [ $SHARE_DOTFILES == 1 ] && command="$command --dotfiles"
     if [ -n "$PUBLIC_AUTH" ]
     then
         # on stdin, a command line would show the password in ps and in the gateway log
@@ -542,7 +551,7 @@ function check_folder {
     CHECK_FAILURE=""
     [ "$FORWARD_PORT" != 0 ] && return 0
     local output status
-    output="$(ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v7: check" < /dev/null 2>&1)"
+    output="$(ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v8: check" < /dev/null 2>&1)"
     status=$?
     # 3 is the gateway's answer, anything else is ssh failing to ask
     [ $status == 3 ] && CHECK_FAILURE="$output"
@@ -552,6 +561,8 @@ function check_folder {
 # what the gateway and the local sshd said about a failed check_folder
 function explain_check_failure {
     echo "The gateway can not reach the shared folder: $CHECK_FAILURE" >&2
+    # sshd logs through a separate process, its line may land just after the gateway's answer
+    sleep 1
     local new_lines="$(tail -n +$((SSHD_ERR_LINES + 1)) "$WORKDIR/sshd.err" 2>/dev/null | grep -v '^Server listening' | tail -n 5)"
     if [ -n "$new_lines" ]
     then

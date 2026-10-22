@@ -266,6 +266,7 @@ describe.skipIf(!hasScript)("client script", () => {
                 expect(run.output()).toContain("-p, --port PORT");
                 expect(run.output()).toContain("-a, --auth USER:PASSWORD");
                 expect(run.output()).toContain("-l, --list");
+                expect(run.output()).toContain("--dotfiles");
                 expect(run.output()).toContain("-r, --last");
                 expect(run.output()).toContain("Opens a tunnel from 127.0.0.1 to this computer.");
             }
@@ -334,6 +335,22 @@ describe.skipIf(!hasScript)("client script", () => {
             expect(await pgrep(secret)).toEqual([]);
             process.kill(run.child.pid!, "SIGTERM");
             await expectStopped(user, run.child.pid!);
+        });
+
+        it("shares hidden files with --dotfiles, and --last keeps that", async () => {
+            const user = await store.create();
+            const scriptFile = await writeScript(user);
+            const first = runWithoutTerminal(scriptFile, ["-d", "~", "-y", "--dotfiles"]);
+            await waitFor(() => first.output().includes("Press Ctrl+C to stop."), 30000, `the tunnel, output:\n${first.output()}`);
+            expect(user.serveDotfiles).toBe(true);
+            process.kill(first.child.pid!, "SIGTERM");
+            await expectStopped(user, first.child.pid!);
+
+            const again = runWithoutTerminal(scriptFile, ["--last"]);
+            await waitFor(() => again.output().includes("Press Ctrl+C to stop."), 30000, `the tunnel, output:\n${again.output()}`);
+            expect(user.serveDotfiles).toBe(true);
+            process.kill(again.child.pid!, "SIGTERM");
+            await expectStopped(user, again.child.pid!);
         });
 
         it("shows the file list instead of index.html with --list", async () => {

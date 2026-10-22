@@ -51,8 +51,9 @@ function killConnection(client: Connection) {
  * 6: --auth asks visitors for a user name and password, a separate SOCKS5 password,
  *    --list shows the file list of folders that have an index.html
  * 7: in folder mode, says the tunnel is up only after "check" found the folder readable
+ * 8: --dotfiles shares names starting with a dot, which are hidden and refused otherwise
  */
-export const CLIENT_SCRIPT_VERSION = 7
+export const CLIENT_SCRIPT_VERSION = 8
 const VERSION_HEADER = /^v(\d+):$/
 /** exit code of a failed check, ssh itself exits with 255 when the connection fails */
 export const CHECK_FAILED = 3
@@ -61,7 +62,9 @@ export const CHECK_FAILED = 3
 const AUTH_FLAG = '--auth'
 /** register flag, folders always show the file list, also when they have an index.html */
 const LIST_FLAG = '--list'
-const REGISTER_FLAGS = [AUTH_FLAG, LIST_FLAG]
+/** register flag, names starting with a dot are listed and served */
+const DOTFILES_FLAG = '--dotfiles'
+const REGISTER_FLAGS = [AUTH_FLAG, LIST_FLAG, DOTFILES_FLAG]
 const PUBLIC_AUTH = /^([^:\x00-\x1f\x7f]+):([^\x00-\x1f\x7f]+)$/
 const STDIN_LIMIT = 1024
 const STDIN_TIMEOUT = 10 * 1000
@@ -212,6 +215,7 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                         client.userData!.remoteUser = temp[1];
                         client.userData!.publicAuth = publicAuth;
                         client.userData!.serveIndex = !flags.includes(LIST_FLAG);
+                        client.userData!.serveDotfiles = flags.includes(DOTFILES_FLAG);
                         client.userData!.httpPort = parseInt(temp[2], 10);
 
                         if (client.userData!.httpPort === 0) {

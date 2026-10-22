@@ -6,12 +6,9 @@ const inspect = require('util').inspect;
 import render from "./template";
 import { promises as fs } from "fs";
 import path from "path";
-import mime from "mime";
 import { UserStore } from "./store";
 import { User } from "./user";
-import ssh2_streams from 'ssh2-streams';
-const SFTPStream = ssh2_streams.SFTPStream;
-import { asSocket, decodePath, encodePath, formatOrigin, getContentType, parseBasicAuth, parseRawData, secretEquals } from "./utils";
+import { asSocket, decodePath, formatOrigin, getContentType, parseBasicAuth, parseRawData, secretEquals } from "./utils";
 import getFastReadStream from "./ssh_fast_read_stream";
 import httpProxy from 'http-proxy';
 import { RawData, WebSocketServer } from 'ws';
@@ -21,6 +18,7 @@ import { Duplex, pipeline } from "stream";
 import { WsManager } from "./ws_manager";
 import { Inspector } from "./inspector";
 import { knownHostsLines } from "./keys";
+import { folderView, hasHiddenSegment } from "./listing";
 
 /** websocket close code for failed inspector login, the app does not retry on it */
 const WS_AUTH_FAILED = 4001
@@ -267,10 +265,6 @@ export async function createHttpServer(config: Config, store: UserStore) {
 
     router.set('views', path.resolve(__dirname, '../views'));
     router.set('view engine', 'ejs');
-    router.locals.mime = mime;
-    router.locals.SFTPStream = SFTPStream;
-    router.locals.decodePath = decodePath;
-    router.locals.encodePath = encodePath;
     
     router.use(function(req, res, next) {
         let domain = req.hostname;
@@ -414,6 +408,10 @@ Disallow: /
                 if (pathInMountPoint === '..' || pathInMountPoint.startsWith('../') || path.isAbsolute(pathInMountPoint)) {
                     return sendVisitorError(req, res, 'forbidden')
                 }
+                // .git and .env are rarely meant to be shared, answer as if they did not exist
+                if (!userData.serveDotfiles && hasHiddenSegment(reqPath)) {
+                    return sendVisitorError(req, res, 'not-found')
+                }
                 
                 userData.getSftp()
                 .then(function (sftpClient) {
@@ -523,16 +521,10 @@ Disallow: /
                                     return sendVisitorError(req, res, sftpErrorKind(err), { err, userId: userData.id })
                                 }
 
-                                files = files.map(function(file) {
-                                    // FIXME: undocumented api
-                                    file.attrs = new ((SFTPStream as any).Stats)(file.attrs);
-                                    return file;
-                                })
-
-                                res.render('folder', {
-                                    path: reqPath,
-                                    files
-                                })
+                                res.render('folder', folderView(reqPath, files, {
+                                    siteName: userData.domainName!,
+                                    showHidden: userData.serveDotfiles,
+                                }))
                             })
 
                             // a folder with an index.html is a site, show that instead of the listing.

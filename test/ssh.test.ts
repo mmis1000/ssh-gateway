@@ -356,6 +356,7 @@ describe("ssh server", () => {
             ["v4", `v4: register ${LOCAL_USER} 8080`],
             ["v5", `v5: register ${LOCAL_USER} 8080 null`],
             ["v6", `v6: register ${LOCAL_USER} 8080 null`],
+            ["v7", `v7: register ${LOCAL_USER} 8080 null`],
         ])("asks %s scripts to update and still accepts them", async (_, command) => {
             const res = await session.exec(command);
             expect(res.stdout).toMatch(/^Please update this script, a newer version with fixes is available:\n/);
@@ -379,6 +380,15 @@ describe("ssh server", () => {
 
             expect((await session.register(8080)).stdout).not.toContain("Visitors are asked");
             expect(user.publicAuth).toBeNull();
+        });
+
+        it("takes --dotfiles and clears it on the next register", async () => {
+            expect(user.serveDotfiles).toBe(false);
+            expect((await session.register(0, "/srv/www", undefined, ["--dotfiles", "--list"])).stdout).toContain("Client accepted.");
+            expect(user.serveDotfiles).toBe(true);
+            expect(user.serveIndex).toBe(false);
+            expect((await session.register(0, "/srv/www")).stdout).toContain("Client accepted.");
+            expect(user.serveDotfiles).toBe(false);
         });
 
         it("takes --list, also together with --auth, and clears it on the next register", async () => {
@@ -973,13 +983,56 @@ describe("ssh server", () => {
             try {
                 const res = await get("/");
                 expect(res.status).toBe(200);
-                expect(res.body).toContain('href="/sub%20dir"');
+                expect(res.body).toContain('href="/sub%20dir/"');
                 expect(res.body).toContain('href="/digits.txt"');
                 expect(res.body).toContain('href="/link-inside"');
                 expect(res.body).toContain('href="/index.html"');
             } finally {
                 user.serveIndex = true;
             }
+        });
+
+        describe("hidden files", () => {
+            beforeAll(async () => {
+                await writeFile(path.join(www, ".env"), "SECRET=1");
+                await mkdir(path.join(www, ".git"), { recursive: true });
+                await writeFile(path.join(www, ".git", "config"), "[core]");
+                await symlink(".env", path.join(www, "env-link"));
+            });
+
+            it("are not listed and answer 404, as if they did not exist", async () => {
+                user.serveIndex = false;
+                try {
+                    const res = await get("/");
+                    expect(res.body).not.toContain(".env");
+                    expect(res.body).not.toContain(".git");
+                } finally {
+                    user.serveIndex = true;
+                }
+                for (const hidden of ["/.env", "/.git/config", "/.git/", "/%2Eenv"]) {
+                    const res = await get(hidden);
+                    expect(res.status, hidden).toBe(404);
+                    expect(res.body).not.toContain("SECRET");
+                }
+                // a symlink to one leads to the same 404
+                const viaLink = await get("/env-link");
+                expect(viaLink.status).toBe(302);
+                expect((await get(viaLink.headers.location!)).status).toBe(404);
+            });
+
+            it("are listed and served with --dotfiles", async () => {
+                user.serveDotfiles = true;
+                user.serveIndex = false;
+                try {
+                    expect((await get("/")).body).toContain('href="/.git/"');
+                    const env = await get("/.env");
+                    expect(env.status).toBe(200);
+                    expect(env.body).toBe("SECRET=1");
+                } finally {
+                    user.serveDotfiles = false;
+                    user.serveIndex = true;
+                }
+            });
         });
 
         it("does not follow a symlinked index.html", async () => {
