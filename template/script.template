@@ -4,10 +4,15 @@ function usage {
     cat <<USAGE
 Usage: $(basename "$0") [options]
 
-Opens a tunnel from *TARGET_HOST* to this computer. Without options it asks what to share.
+Opens a tunnel from *TARGET_HOST* to this computer. Without options it asks what to share
+and whether visitors need a password.
 
   -p, --port PORT   share the web server on local PORT
   -d, --dir DIR     share the directory DIR as a static site
+  -a, --auth USER:PASSWORD
+                    ask visitors for this user name and password. Other users of this
+                    computer can see options in ps, set GATEWAY_AUTH=USER:PASSWORD instead
+                    to keep it from them
   -y, --yes         accept the notice below without asking
   -h, --help        show this help and exit
 
@@ -17,6 +22,8 @@ USAGE
 
 FORWARD_PORT=""
 STATIC_DIRECTORY=""
+PUBLIC_AUTH="${GATEWAY_AUTH:-}"
+ASKED_WHAT_TO_SHARE=0
 ASSUME_YES=0
 while [ $# -gt 0 ]
 do
@@ -29,6 +36,9 @@ do
         -d|--dir)
             [ $# -ge 2 ] || { echo "$1 needs a directory, see --help" >&2; exit 2; }
             STATIC_DIRECTORY="$2"; shift;;
+        -a|--auth)
+            [ $# -ge 2 ] || { echo "$1 needs USER:PASSWORD, see --help" >&2; exit 2; }
+            PUBLIC_AUTH="$2"; shift;;
         *) echo "Unknown option $1, see --help" >&2; exit 2;;
     esac
     shift
@@ -36,6 +46,15 @@ done
 if [ -n "$FORWARD_PORT" ] && [ -n "$STATIC_DIRECTORY" ]
 then
     echo "Use either --port or --dir, not both" >&2
+    exit 2
+fi
+# the user name can not contain a colon, the password can, neither can be empty
+function valid_auth {
+    [[ "$1" =~ ^[^:[:cntrl:]]+:[^[:cntrl:]]+$ ]]
+}
+if [ -n "$PUBLIC_AUTH" ] && ! valid_auth "$PUBLIC_AUTH"
+then
+    echo "--auth needs USER:PASSWORD, the user name without a colon" >&2
     exit 2
 fi
 
@@ -315,6 +334,7 @@ then
     [ "$((10#$FORWARD_PORT))" == 0 ] && { echo "Use --dir to share a directory" >&2; exit 2; }
 else
     need_terminal "what to share" "--port or --dir"
+    ASKED_WHAT_TO_SHARE=1
     while true
     do
         ask FORWARD_PORT "Forward which port as the http entry (0 to use static directory instead)?" 8080
@@ -339,6 +359,31 @@ else
         echo "$STATIC_DIRECTORY is not a directory."
     done
     STATIC_DIRECTORY="$RESOLVED"
+fi
+
+# only asked together with what to share, runs with --port or --dir stay as they are
+if [ "$ASKED_WHAT_TO_SHARE" == 1 ] && [ -z "$PUBLIC_AUTH" ]
+then
+    while true
+    do
+        read -p "Ask visitors for a user name and password? Enter the user name, empty for no: " -e AUTH_USER || exit 2
+        [ -z "$AUTH_USER" ] && break
+        # checked on its own, a colon in it would move part of the user name into the password
+        if [[ "$AUTH_USER" == *:* ]] || ! valid_auth "$AUTH_USER:x"
+        then
+            echo "Try again, the user name can not contain a colon."
+            continue
+        fi
+        read -s -p "Password for $AUTH_USER: " AUTH_PASSWORD || exit 2
+        echo
+        if valid_auth "$AUTH_USER:$AUTH_PASSWORD"
+        then
+            PUBLIC_AUTH="$AUTH_USER:$AUTH_PASSWORD"
+            break
+        fi
+        echo "Try again, the password can not be empty."
+    done
+    unset AUTH_USER AUTH_PASSWORD
 fi
 
 # setup keys
@@ -393,11 +438,23 @@ else
     TUNNEL_PORT=$FORWARD_PORT
 fi
 
+function register {
+    local command="v6: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
+    if [ -n "$PUBLIC_AUTH" ]
+    then
+        # on stdin, a command line would show the password in ps and in the gateway log
+        printf '%s\n' "$PUBLIC_AUTH" | ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "$command --auth"
+    else
+        # the gateway never reads it, do not let ssh take what is typed in the terminal
+        ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "$command" < /dev/null
+    fi
+}
+
 # open the connection, register and add the reverse forward
 function connect {
     ssh -N -M "${SSH_OPTS[@]}" -o "ClearAllForwardings yes" $TARGET_USER@$TARGET_HOST &
     sleep 5
-    ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v5: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")" || return 1
+    register || return 1
     sleep 1
     ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$TUNNEL_PORT $TARGET_USER@$TARGET_HOST
 }

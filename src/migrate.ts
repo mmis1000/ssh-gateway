@@ -7,6 +7,7 @@ import {
     GATEWAY_KEY_FILE,
     ID_PATTERN,
     initEmptyStore,
+    randomPassword,
     readStoreVersion,
     STORE_VERSION,
     storePaths,
@@ -122,6 +123,7 @@ export async function planMigration(saveDir: string, legacyHostKeyDir: string): 
                 id: info.id,
                 domain: info.domain,
                 password: info.password,
+                socksPassword: randomPassword(),
                 createdAt: (await stat(infoFile)).mtime.toISOString(),
                 sourceDir,
             })

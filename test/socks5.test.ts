@@ -136,25 +136,25 @@ describe("socks5 server", () => {
     const handshakeReplies = Buffer.from([5, 2, 1, 0, 5, 0, 0, 1, 0, 0, 0, 0, 0, 0]);
 
     it("tunnels a connection", async () => {
-        const { data } = await exchange([greeting, auth(user.id!, user.password!), connectRequest(echoPort), Buffer.from("ping")]);
+        const { data } = await exchange([greeting, auth(user.id!, user.socksPassword!), connectRequest(echoPort), Buffer.from("ping")]);
         expect(data).toEqual(Buffer.concat([handshakeReplies, Buffer.from("ping")]));
     });
 
     it("handles everything arriving one byte at a time", async () => {
-        const all = Buffer.concat([greeting, auth(user.id!, user.password!), connectRequest(echoPort), Buffer.from("ping")]);
+        const all = Buffer.concat([greeting, auth(user.id!, user.socksPassword!), connectRequest(echoPort), Buffer.from("ping")]);
         const { data } = await exchange([...all].map((byte) => Buffer.from([byte])), 400);
         expect(data).toEqual(Buffer.concat([handshakeReplies, Buffer.from("ping")]));
     });
 
     it("keeps data sent together with the request", async () => {
         // optimistic clients do not wait for the reply, the bytes must survive the async channel setup
-        const all = Buffer.concat([greeting, auth(user.id!, user.password!), connectRequest(echoPort), Buffer.from("early data")]);
+        const all = Buffer.concat([greeting, auth(user.id!, user.socksPassword!), connectRequest(echoPort), Buffer.from("early data")]);
         const { data } = await exchange([all]);
         expect(data).toEqual(Buffer.concat([handshakeReplies, Buffer.from("early data")]));
     });
 
-    it("rejects a wrong password and unknown users", async () => {
-        for (const credential of [auth(user.id!, "wrong"), auth("nobody", user.password!), auth("../etc", "x")]) {
+    it("rejects a wrong password, the account password and unknown users", async () => {
+        for (const credential of [auth(user.id!, "wrong"), auth(user.id!, user.password!), auth("nobody", user.socksPassword!), auth("../etc", "x")]) {
             const { data, closed } = await refused([greeting, credential]);
             expect(data).toEqual(Buffer.from([5, 2, 1, 1]));
             expect(closed).toBe(true);
@@ -170,16 +170,16 @@ describe("socks5 server", () => {
     it("refuses other commands and address types", async () => {
         const bind = Buffer.from(connectRequest(echoPort));
         bind[1] = 2;
-        const unsupportedCommand = await refused([greeting, auth(user.id!, user.password!), bind]);
+        const unsupportedCommand = await refused([greeting, auth(user.id!, user.socksPassword!), bind]);
         expect(unsupportedCommand.data.subarray(4, 6)).toEqual(Buffer.from([5, 7]));
         expect(unsupportedCommand.closed).toBe(true);
 
-        const badAddress = await refused([greeting, auth(user.id!, user.password!), Buffer.from([5, 1, 0, 9, 0, 0])]);
+        const badAddress = await refused([greeting, auth(user.id!, user.socksPassword!), Buffer.from([5, 1, 0, 9, 0, 0])]);
         expect(badAddress.data.subarray(4, 6)).toEqual(Buffer.from([5, 8]));
     });
 
     it("reports ports it cannot reach", async () => {
-        const { data, closed } = await refused([greeting, auth(user.id!, user.password!), connectRequest(1)]);
+        const { data, closed } = await refused([greeting, auth(user.id!, user.socksPassword!), connectRequest(1)]);
         expect(data.subarray(4, 6)).toEqual(Buffer.from([5, 5]));
         expect(closed).toBe(true);
     });
@@ -218,7 +218,7 @@ describe("socks5 server", () => {
             const socket = net.connect(port, "127.0.0.1");
             socket.on("error", () => {});
             await new Promise((resolve) => socket.on("connect", resolve));
-            socket.write(Buffer.concat([greeting, auth(user.id!, user.password!), connectRequest(echoPort)]));
+            socket.write(Buffer.concat([greeting, auth(user.id!, user.socksPassword!), connectRequest(echoPort)]));
             await new Promise((resolve) => socket.once("data", resolve));
             if (i % 2) socket.end();
             else socket.resetAndDestroy();

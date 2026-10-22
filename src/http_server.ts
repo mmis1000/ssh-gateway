@@ -11,7 +11,7 @@ import { UserStore } from "./store";
 import { User } from "./user";
 import ssh2_streams from 'ssh2-streams';
 const SFTPStream = ssh2_streams.SFTPStream;
-import { asSocket, decodePath, encodePath, formatOrigin, getContentType, parseRawData } from "./utils";
+import { asSocket, decodePath, encodePath, formatOrigin, getContentType, parseBasicAuth, parseRawData, secretEquals } from "./utils";
 import getFastReadStream from "./ssh_fast_read_stream";
 import httpProxy from 'http-proxy';
 import { RawData, WebSocketServer } from 'ws';
@@ -23,6 +23,8 @@ import { knownHostsLines } from "./keys";
 
 /** websocket close code for failed inspector login, the app does not retry on it */
 const WS_AUTH_FAILED = 4001
+/** asked for on forwards started with run.sh --auth */
+const VISITOR_AUTH_CHALLENGE = 'Basic realm="Protected forward", charset="UTF-8"'
 
 const idMap: Record<string, number> = {}
 const getId = (name: string) => {
@@ -72,7 +74,7 @@ export async function createHttpServer(config: Config, store: UserStore) {
                 const username: string = String(parsed[0]) ?? ''
                 const password: string = String(parsed[1]) ?? ''
                 const user = await store.findById(username)
-                if (password === user.password) {
+                if (secretEquals(user.password, password)) {
                     console.log(`${username}: [HTTP] ws authenticated`)
                     wsManager.addManagedSocket(username, ws)
                     ws.off('message', tempHandler)
@@ -157,6 +159,10 @@ export async function createHttpServer(config: Config, store: UserStore) {
 
         store.findByDomain(id)
         .then(async function (userData) {
+            if (!userData.allowsVisitor(req.headers.authorization)) {
+                socket.end(`HTTP/1.1 401 Unauthorized\r\nWWW-Authenticate: ${VISITOR_AUTH_CHALLENGE}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n`)
+                throw Error('visitor not authenticated')
+            }
             if (userData.httpPort !== 0) {
                 const agent = await userData.getConnectionAgent();
                 return [userData, agent] as const;
@@ -190,7 +196,9 @@ export async function createHttpServer(config: Config, store: UserStore) {
             }
         })
         .catch(function (err) {
-            socket.destroy()
+            // let a response written with end() go out first
+            if (socket.writableEnded) setTimeout(() => socket.destroy(), 1000).unref()
+            else socket.destroy()
         })
     });
 
@@ -240,6 +248,13 @@ Disallow: /
         .then(function(userData) {
             if (aborted) {
                 throw new Error('aborted')
+            }
+
+            // before tracking, scanners guessing passwords should not fill the inspector
+            if (!userData.allowsVisitor(req.headers.authorization)) {
+                res.setHeader('WWW-Authenticate', VISITOR_AUTH_CHALLENGE)
+                res.status(401).type('text/plain').end('This forward needs a user name and password')
+                return
             }
 
             const tracker = inspector.track(userData.id!, req, res, { remoteAddress: req.ip ?? '' })
@@ -512,23 +527,19 @@ Disallow: /
         }
 
         if (config.setupRequireAuth) {
-            const authHeader = req.headers.authorization ?? ''
-            const isBasicAuth = authHeader && authHeader.startsWith('Basic')
-            
-            if (!isBasicAuth) {
+            const credential = parseBasicAuth(req.headers.authorization)
+
+            if (!credential) {
                 res.setHeader('WWW-Authenticate', 'Basic realm="Not authenticated"')
                 res.status(401)
                 res.end('')
                 return
             }
 
-            const base64Str = authHeader.replace('Basic', '').trim()
-            const str = Buffer.from(base64Str, 'base64').toString('utf8')
-
-            const account = decodeURIComponent(str.split(':')[0] ?? '')
-            const password = decodeURIComponent(str.split(':')[1] ?? '')
-
-            if (account !== config.setupAccount || password !== config.setupPassword) {
+            // check both, so the time taken does not tell whether the account was right
+            const accountMatches = secretEquals(config.setupAccount, credential.account)
+            const passwordMatches = secretEquals(config.setupPassword, credential.password)
+            if (!accountMatches || !passwordMatches) {
                 res.status(401)
                 res.end('bad credential')
                 return
@@ -556,25 +567,20 @@ Disallow: /
             return next();
         }
 
-        const authHeader = req.headers.authorization ?? ''
-        const isBasicAuth = authHeader && authHeader.startsWith('Basic')
+        const credential = parseBasicAuth(req.headers.authorization)
 
-        if (!isBasicAuth) {
+        if (!credential) {
             res.setHeader('WWW-Authenticate', 'Basic realm="Not authenticated"')
             res.status(401)
             res.end('')
             return
         }
 
-        const base64Str = authHeader.replace('Basic', '').trim()
-        const str = Buffer.from(base64Str, 'base64').toString('utf8')
-
-        const account = decodeURIComponent(str.split(':')[0] ?? '')
-        const password = decodeURIComponent(str.split(':')[1] ?? '')
+        const { account, password } = credential
 
         store.findById(account)
         .then((userData) => {
-            if (userData.password !== password) {
+            if (!secretEquals(userData.password, password)) {
                 throw new Error('not authenticated')
             }
             return userData
@@ -588,7 +594,7 @@ Disallow: /
             res.end(renderClientScript(template, config, userData, knownHosts))
         })
         .catch((err) => {
-            console.log(`${account}: [HTTP] denied update of ${str} due to ${err}`);
+            console.log(`${account}: [HTTP] denied update due to ${err}`);
             res.setHeader('WWW-Authenticate', 'Basic realm="Not authenticated"')
             res.status(401)
             res.end('')
@@ -605,7 +611,7 @@ Disallow: /
         // browsers get the landing page, curl and other tools keep the plain text instructions
         if (req.accepts(['text/plain', 'text/html']) === 'text/html') {
             const setupOrigin = formatOrigin(config.setupProtocol, config.setupHost, config.setupPort)
-            const exampleHost = `brave-otter-42.${config.httpHost}`
+            const exampleHost = `brave-otter-42-k3x9qz.${config.httpHost}`
             return res.render('landing', {
                 setupHost: config.setupHost,
                 setupOrigin,

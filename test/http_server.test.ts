@@ -64,7 +64,7 @@ describe("http server", () => {
             expect(res.body).toContain(`data-copy="curl -X POST -u &#39;username:password&#39; http://${SETUP_HOST}/setup &gt; run.sh"`);
             expect(res.body).toContain("chmod +x run.sh &amp;&amp; ./run.sh");
             expect(res.body).toContain("This gateway is private");
-            expect(res.body).toContain(`http://brave-otter-42.${HTTP_HOST}/`);
+            expect(res.body).toContain(`http://brave-otter-42-k3x9qz.${HTTP_HOST}/`);
             expect(res.body).toContain('href="/app/"');
             // self contained, no third party requests
             expect(res.body).not.toMatch(/<(script|link)[^>]+(src|href)="https?:/);
@@ -108,7 +108,7 @@ describe("http server", () => {
             expect(setup.body).toContain('-a -x -o "IdentitiesOnly yes"');
             expect(setup.body).toContain('-o "StrictHostKeyChecking yes"');
             expect(setup.body).not.toContain("StrictHostKeyChecking no");
-            expect(setup.body).toContain('"v5: register');
+            expect(setup.body).toContain('"v6: register');
             expect(setup.body).toContain("ForceCommand internal-sftp -R");
             expect(setup.body).toContain("PermitOpen localhost:* 127.0.0.1:*");
 
@@ -140,6 +140,31 @@ describe("http server", () => {
             // the rejected lookup used to write headers again and crash the process
             await new Promise((resolve) => setTimeout(resolve, 50));
             expect((await request(port, SETUP_HOST, "/")).status).toBe(200);
+        });
+    });
+
+    describe("setup password with special characters", () => {
+        it("accepts colons and percent signs in the password", async () => {
+            const temp = await createTempDir();
+            const otherSave = path.join(temp.dir, "save");
+            const store = await openTestStore(otherSave);
+            await loadHostKeys(store.hostKeyDir, () => {});
+            const config = createConfig(otherSave, { setupPassword: "se:cr%et" });
+            const { server: otherServer } = await createHttpServer(config, store);
+            const otherPort = await listen(otherServer);
+            try {
+                const setup = (password: string) => request(otherPort, SETUP_HOST, "/setup", {
+                    method: "POST",
+                    headers: { Authorization: basicAuth("admin", password) },
+                });
+                expect((await setup("se:cr%et")).status).toBe(200);
+                // used to be cut at the second colon
+                expect((await setup("se")).status).toBe(401);
+                expect((await setup("se:cr%et:")).status).toBe(401);
+            } finally {
+                await close(otherServer);
+                await temp.cleanup();
+            }
         });
     });
 

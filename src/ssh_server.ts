@@ -5,8 +5,8 @@ import path from 'path';
 import { parse } from 'shell-quote';
 
 import buffersEqual from 'buffer-equal-constant-time';
-import ssh2, { Connection } from 'ssh2';
-import { Protocol, User } from "./user"
+import ssh2, { Connection, ServerChannel } from 'ssh2';
+import { Protocol, PublicAuth, User } from "./user"
 import { UserStore } from "./store"
 import { formatOrigin } from "./utils"
 import { AddressInfo } from "net";
@@ -48,9 +48,38 @@ function killConnection(client: Connection) {
  * 4: quiet while the tunnel is fine, reports only when the connection is lost and back
  * 5: --port/--dir/--yes/--help options, files in ~/.ssh-gateway/<host>/<id>, works without
  *    netstat and with spaces in paths, refuses to run twice
+ * 6: --auth asks visitors for a user name and password, a separate SOCKS5 password
  */
-export const CLIENT_SCRIPT_VERSION = 5
+export const CLIENT_SCRIPT_VERSION = 6
 const VERSION_HEADER = /^v(\d+):$/
+/** last register argument, the client then sends user:pass as the first line on stdin */
+const AUTH_FLAG = '--auth'
+const PUBLIC_AUTH = /^([^:\x00-\x1f\x7f]+):([^\x00-\x1f\x7f]+)$/
+const STDIN_LIMIT = 1024
+const STDIN_TIMEOUT = 10 * 1000
+
+/** the first line the client sends on stdin, secrets come this way so they stay out of ps and logs */
+function readLine(stream: ServerChannel) {
+    return new Promise<string>((resolve, reject) => {
+        let data = ''
+        const done = (err?: Error) => {
+            clearTimeout(timer)
+            stream.off('data', onData)
+            stream.off('end', onEnd)
+            if (err) reject(err)
+            else resolve(data.split('\n')[0].replace(/\r$/, ''))
+        }
+        const onData = (chunk: Buffer) => {
+            data += chunk.toString('utf8')
+            if (data.includes('\n')) done()
+            else if (data.length > STDIN_LIMIT) done(new Error('line too long'))
+        }
+        const onEnd = () => done()
+        const timer = setTimeout(() => done(new Error('timed out')), STDIN_TIMEOUT)
+        stream.on('data', onData)
+        stream.once('end', onEnd)
+    })
+}
 
 export function createSshServer(config: Config, store: UserStore, hostKeys: Buffer[], options: SshServerOptions = {}) {
     return new ssh2.Server({
@@ -160,13 +189,19 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                     const scriptVersion = header ? Number(header[1]) : 0
                     if (header) temp.shift()
                     client.userData!.protocolVersion = scriptVersion >= 1 ? Protocol.V1 : Protocol.V0
+                    const wantsAuth = temp.length === 5 && temp[4] === AUTH_FLAG
+                    if (wantsAuth) temp.pop()
 
-                    if ((temp.length !== 3 && temp.length !== 4) || temp[0] !== 'register' || !temp[2].match(/^[1-9]\d*$|^0$/)) {
-                        console.log(`${client.userData!.id}: [SSH] bad register command: ${inspect(info.command)}`);
-                        stream.stderr.write('bad register command');
+                    const fail = (message: string) => {
+                        console.log(`${client.userData!.id}: [SSH] ${message}: ${inspect(info.command)}`);
+                        stream.stderr.write(message);
                         stream.exit(-1);
-                    } else {
+                        stream.end();
+                    }
+
+                    const register = (publicAuth: PublicAuth | null) => {
                         client.userData!.remoteUser = temp[1];
+                        client.userData!.publicAuth = publicAuth;
                         client.userData!.httpPort = parseInt(temp[2], 10);
 
                         if (client.userData!.httpPort === 0) {
@@ -182,13 +217,25 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                             : ''
                         stream.write(`${updateNotice}Client accepted.
 Forward server is opened at ${config.httpProtocol}://${client.userData!.domainName}.${config.httpHost}:${config.httpPort}/
-Socks v5 tunnel is opened at socks5://${client.userData!.id}:${client.userData!.password}@${config.socksHost}:${config.socksPort}
+Socks v5 tunnel is opened at socks5://${client.userData!.id}:${client.userData!.socksPassword}@${config.socksHost}:${config.socksPort}
 To get new version of current script, fetch it from ${config.setupProtocol}://${client.userData!.id}:${client.userData!.password}@${config.setupHost}:${config.setupPort}/update
 Inspect requests at ${config.setupProtocol}://${config.setupHost}:${config.setupPort}/app/#${client.userData!.id}:${client.userData!.password}
-`);
+${publicAuth ? `Visitors are asked for the user name ${publicAuth.account} and the password given with --auth.\n` : ''}`);
                         stream.exit(0);
+                        stream.end();
                     }
-                    stream.end();
+
+                    if ((temp.length !== 3 && temp.length !== 4) || temp[0] !== 'register' || !temp[2].match(/^[1-9]\d*$|^0$/)) {
+                        fail('bad register command')
+                    } else if (wantsAuth) {
+                        readLine(stream).then((line) => {
+                            const match = PUBLIC_AUTH.exec(line)
+                            if (!match) return fail('bad --auth value, use USER:PASSWORD')
+                            register({ account: match[1], password: match[2] })
+                        }, (err: Error) => fail(`no --auth value received, ${err.message}`))
+                    } else {
+                        register(null)
+                    }
                 });
             });
 

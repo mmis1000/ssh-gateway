@@ -1,10 +1,9 @@
 import net from 'net'
-import { createHash, timingSafeEqual } from 'crypto'
 import { inspect } from 'util'
 import { User } from './user'
 import { UserStore } from './store'
 import { Config } from './interface'
-import { closeWhenDone } from './utils'
+import { closeWhenDone, secretEquals } from './utils'
 import {
     AddressTypeError,
     AUTH_VERSION,
@@ -27,9 +26,8 @@ export interface SocksServerOptions {
 const AUTH_SUCCESS = Buffer.from([AUTH_VERSION, 0x00])
 const AUTH_FAILURE = Buffer.from([AUTH_VERSION, 0x01])
 
-const digest = (value: string) => createHash('sha256').update(value).digest()
-const passwordMatches = (user: User, password: string) =>
-    user.password != null && timingSafeEqual(digest(user.password), digest(password))
+/** SOCKS5 sends the password in the clear, so it has a password of its own, not the account one */
+const passwordMatches = (user: User, password: string) => secretEquals(user.socksPassword, password)
 
 /**
  * SOCKS5 with username/password auth and the CONNECT command only. Connections go to

@@ -53,6 +53,8 @@ describe("storage migration", () => {
                 id: user.id,
                 domain: user.domain,
                 password: user.password,
+                // v1 had no SOCKS5 password, the account password stops working for SOCKS5
+                socksPassword: expect.stringMatching(/^[a-z0-9]{16}$/),
             });
             expect(await mode(dir)).toBe(0o700);
             expect(await mode(path.join(dir, "user.json"))).toBe(0o600);

@@ -51,6 +51,15 @@ chmod 755 run.sh
 And then... *Magic*  
 It created everything required to enable port forwarding and authentication for you
 
+Run `./run.sh --help` for the options. Run without options, it also asks whether visitors need a user name
+and password. With `--port` or `--dir` use `--auth user:password` instead, or `GATEWAY_AUTH=user:password`
+to keep the password out of `ps`.
+The `Authorization` header is still passed on to your app.
+
+The SOCKS5 tunnel has a password of its own, printed when the script connects. SOCKS5 sends it unencrypted,
+so it only opens the tunnel, never the inspector or the script download. Users created before this had
+the account password for SOCKS5, they get a new one on the next start of the gateway.
+
 ### What the gateway can access
 
 - Port mode: only the port you forward.

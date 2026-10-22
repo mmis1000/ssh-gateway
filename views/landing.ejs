@@ -221,7 +221,7 @@ Inspect requests at <span class="link"><%= setupOrigin %>/app/#…</span></pre>
           <div class="feature">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12h16M14 6l6 6-6 6"/><path d="M4 6v12"/></svg>
             <h3>SOCKS5 tunnel</h3>
-            <p>While sharing a folder, reach any port on your machine through <code>socks5://<%= socksHost %>:<%= socksPort %></code> with your id and password.</p>
+            <p>While sharing a folder, reach any port on your machine through <code>socks5://<%= socksHost %>:<%= socksPort %></code> with your id and the SOCKS password <code>run.sh</code> prints. It has a password of its own because SOCKS5 sends it unencrypted.</p>
           </div>
         </div>
       </div>

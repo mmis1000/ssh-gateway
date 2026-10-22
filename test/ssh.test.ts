@@ -29,12 +29,13 @@ interface ExecResult {
     stderr: string;
 }
 
-function run(file: string, args: string[]) {
+function run(file: string, args: string[], input?: string) {
     return new Promise<ExecResult>((resolve) => {
-        execFile(file, args, { timeout: 15000 }, (err, stdout, stderr) => {
+        const child = execFile(file, args, { timeout: 15000 }, (err, stdout, stderr) => {
             const code = err ? (typeof err.code === "number" ? err.code : -1) : 0;
             resolve({ code, stdout, stderr });
         });
+        if (input !== undefined) child.stdin!.end(input);
     });
 }
 
@@ -168,8 +169,8 @@ class ClientSession {
         ];
     }
 
-    exec(command: string) {
-        return run("ssh", [...this.args(), command]);
+    exec(command: string, input?: string) {
+        return run("ssh", [...this.args(), command], input);
     }
 
     async connect() {
@@ -179,10 +180,11 @@ class ClientSession {
         await waitFor(async () => ((await run("ssh", this.args(["-O", "check"]))).code === 0 ? true : undefined));
     }
 
-    register(port: number, staticDirectory?: string) {
-        const args = [`v${CLIENT_SCRIPT_VERSION}:`, "register", LOCAL_USER, String(port)];
-        if (staticDirectory) args.push(staticDirectory);
-        return this.exec(args.map((arg) => `'${arg}'`).join(" "));
+    /** auth is sent on stdin like run.sh --auth does */
+    register(port: number, staticDirectory?: string, auth?: string) {
+        const args = [`v${CLIENT_SCRIPT_VERSION}:`, "register", LOCAL_USER, String(port), staticDirectory ?? "null"];
+        if (auth !== undefined) args.push("--auth");
+        return this.exec(args.map((arg) => `'${arg}'`).join(" "), auth === undefined ? undefined : `${auth}\n`);
     }
 
     forward(localPort: number) {
@@ -340,7 +342,8 @@ describe("ssh server", () => {
             expect(res.stdout).toMatch(/^Client accepted\./);
             expect(res.stdout).not.toContain("Please update");
             expect(res.stdout).toContain(`Forward server is opened at http://${user.domainName}.${HTTP_HOST}:80/`);
-            expect(res.stdout).toContain(`socks5://${user.id}:${user.password}@`);
+            expect(res.stdout).toContain(`socks5://${user.id}:${user.socksPassword}@`);
+            expect(user.socksPassword).not.toBe(user.password);
             expect(user.httpPort).toBe(8080);
             expect(user.remoteUser).toBe(LOCAL_USER);
         });
@@ -351,6 +354,7 @@ describe("ssh server", () => {
             ["v2", `v2: register ${LOCAL_USER} 8080`],
             ["v3", `v3: register ${LOCAL_USER} 8080`],
             ["v4", `v4: register ${LOCAL_USER} 8080`],
+            ["v5", `v5: register ${LOCAL_USER} 8080 null`],
         ])("asks %s scripts to update and still accepts them", async (_, command) => {
             const res = await session.exec(command);
             expect(res.stdout).toMatch(/^Please update this script, a newer version with fixes is available:\n/);
@@ -365,11 +369,36 @@ describe("ssh server", () => {
             expect(user.staticDirectory).toBe("/srv/site");
         });
 
+        it("takes the visitor password from stdin, and clears it on the next register", async () => {
+            const res = await session.register(8080, undefined, "alice:pa ss:word");
+            expect(res.stdout).toContain("Client accepted.");
+            expect(res.stdout).toContain("Visitors are asked for the user name alice and the password given with --auth.");
+            expect(res.stdout).not.toContain("pa ss:word");
+            expect(user.publicAuth).toEqual({ account: "alice", password: "pa ss:word" });
+
+            expect((await session.register(8080)).stdout).not.toContain("Visitors are asked");
+            expect(user.publicAuth).toBeNull();
+        });
+
+        it.each([
+            ["no colon", "alice\n", "bad --auth value"],
+            ["an empty user name", ":secret\n", "bad --auth value"],
+            ["an empty password", "alice:\n", "bad --auth value"],
+            ["a control character", "alice:se\tcret\n", "bad --auth value"],
+            ["nothing", "", "bad --auth value"],
+            ["a line that never ends", "a".repeat(2000), "no --auth value received, line too long"],
+        ])("rejects --auth with %s", async (_, input, message) => {
+            const res = await session.exec(`'v${CLIENT_SCRIPT_VERSION}:' register ${LOCAL_USER} 8080 null --auth`, input);
+            expect(res.stderr).toContain(message);
+            expect(res.stdout).not.toContain("Client accepted.");
+        });
+
         it.each([
             ["missing port", `v1: register ${LOCAL_USER}`],
             ["non numeric port", `v1: register ${LOCAL_USER} http`],
             ["leading zero port", `v1: register ${LOCAL_USER} 080`],
             ["unknown command", `v1: unregister ${LOCAL_USER} 8080`],
+            ["an unknown flag", `v6: register ${LOCAL_USER} 8080 null --verbose`],
         ])("rejects %s", async (_, command) => {
             const res = await session.exec(command);
             expect(res.stderr).toContain("bad register command");
@@ -383,6 +412,8 @@ describe("ssh server", () => {
         let target: http.Server;
         const targetHits: string[] = [];
         const host = () => `${user.domainName}.${HTTP_HOST}`;
+        let targetPortNumber: number;
+        const targetPort = () => targetPortNumber;
 
         beforeAll(async () => {
             target = http.createServer((req, res) => {
@@ -410,7 +441,7 @@ describe("ssh server", () => {
                     }));
                 });
             });
-            const targetPort = await listen(target);
+            const targetPort = targetPortNumber = await listen(target);
 
             user = await gateway.store.create();
             session = await ClientSession.create(gateway, user);
@@ -528,6 +559,80 @@ describe("ssh server", () => {
                 target.off("upgrade", onUpgrade);
                 echo.close();
             }
+        });
+
+        describe("with --auth", () => {
+            const authorization = (credential: string) => `Basic ${Buffer.from(credential).toString("base64")}`;
+
+            beforeAll(async () => {
+                expect((await session.register(targetPort(), undefined, "alice:open sesame")).stdout).toContain("Client accepted.");
+            });
+
+            afterAll(async () => {
+                expect((await session.register(targetPort())).stdout).toContain("Client accepted.");
+            });
+
+            it("asks visitors for the user name and password", async () => {
+                const hitsBefore = targetHits.length;
+                for (const headers of [{}, { Authorization: authorization("alice:wrong") }, { Authorization: authorization("bob:open sesame") }]) {
+                    const res = await request(gateway.httpPort, host(), "/private", { headers });
+                    expect(res.status).toBe(401);
+                    expect(res.headers["www-authenticate"]).toBe('Basic realm="Protected forward", charset="UTF-8"');
+                }
+                expect(targetHits.length).toBe(hitsBefore);
+
+                const res = await request(gateway.httpPort, host(), "/private", { headers: { Authorization: authorization("alice:open sesame") } });
+                expect(res.status).toBe(200);
+                expect(JSON.parse(res.body).url).toBe("/private");
+            });
+
+            it("keeps refused visitors out of the inspector, and still replays the others", async () => {
+                const inspector = await openInspector(gateway.httpPort, user.id!, user.password!);
+                try {
+                    await inspector.waitFor((packet) => packet.type === "history");
+                    await request(gateway.httpPort, host(), "/refused");
+                    const ok = await request(gateway.httpPort, host(), "/allowed", { headers: { Authorization: authorization("alice:open sesame") } });
+                    expect(ok.status).toBe(200);
+                    const done = await inspector.waitFor(isEntry((entry) => entry.path === "/allowed" && entry.state === "complete"));
+                    expect(inspector.packets.some((packet) => packet.type === "entry" && packet.entry.path === "/refused")).toBe(false);
+
+                    inspector.send({ type: "replay", id: done.entry.id });
+                    const replayed = await inspector.waitFor(isEntry((entry) => entry.replayOf === done.entry.id && entry.state === "complete"));
+                    expect(replayed.entry.status).toBe(200);
+                } finally {
+                    inspector.ws.close();
+                }
+            });
+
+            it("asks websocket visitors too", async () => {
+                const refused = new WebSocket(`ws://127.0.0.1:${gateway.httpPort}/socket`, { headers: { Host: host() } });
+                const status = await new Promise<number>((resolve) => {
+                    refused.once("unexpected-response", (_req, res) => resolve(res.statusCode!));
+                    refused.once("error", () => resolve(-1));
+                });
+                expect(status).toBe(401);
+
+                const echo = new WebSocketServer({ noServer: true });
+                const onUpgrade = (req: http.IncomingMessage, socket: any, head: Buffer) => {
+                    echo.handleUpgrade(req, socket, head, (ws) => ws.on("message", (data) => ws.send(`echo: ${data}`)));
+                };
+                target.on("upgrade", onUpgrade);
+                const ws = new WebSocket(`ws://127.0.0.1:${gateway.httpPort}/socket`, {
+                    headers: { Host: host(), Authorization: authorization("alice:open sesame") },
+                });
+                try {
+                    await new Promise((resolve, reject) => {
+                        ws.once("open", resolve);
+                        ws.once("error", reject);
+                    });
+                    ws.send("hello");
+                    expect(await new Promise<string>((resolve) => ws.once("message", (data) => resolve(data.toString())))).toBe("echo: hello");
+                } finally {
+                    ws.close();
+                    target.off("upgrade", onUpgrade);
+                    echo.close();
+                }
+            });
         });
 
         it("closes forwarded channels after each request", async () => {
@@ -831,7 +936,7 @@ describe("ssh server", () => {
             afterAll(() => new Promise<void>((resolve) => echo.close(() => resolve())));
 
             it("reaches ports on the client machine", async () => {
-                const socket = await socks5Connect(gateway.socksPort, user.id!, user.password!, "localhost", echoPort);
+                const socket = await socks5Connect(gateway.socksPort, user.id!, user.socksPassword!, "localhost", echoPort);
                 socket.write("ping");
                 const reply = await new Promise<string>((resolve) => socket.once("data", (data) => resolve(String(data))));
                 expect(reply).toBe("ping");
@@ -840,7 +945,7 @@ describe("ssh server", () => {
 
             it("keeps data sent together with the request through the tunnel", async () => {
                 const user_ = Buffer.from(user.id!);
-                const pass = Buffer.from(user.password!);
+                const pass = Buffer.from(user.socksPassword!);
                 const socket = net.connect(gateway.socksPort, "127.0.0.1");
                 let data = Buffer.alloc(0);
                 socket.on("data", (chunk) => (data = Buffer.concat([data, chunk])));
@@ -862,9 +967,13 @@ describe("ssh server", () => {
                 await expect(socks5Connect(gateway.socksPort, user.id!, "wrong", "localhost", echoPort)).rejects.toThrow(/auth rejected/);
             });
 
+            it("rejects the account password, which must never be sent unencrypted", async () => {
+                await expect(socks5Connect(gateway.socksPort, user.id!, user.password!, "localhost", echoPort)).rejects.toThrow(/auth rejected/);
+            });
+
             it("closes the tunneled connections", async () => {
                 for (let i = 0; i < 40; i++) {
-                    const socket = await socks5Connect(gateway.socksPort, user.id!, user.password!, "localhost", echoPort);
+                    const socket = await socks5Connect(gateway.socksPort, user.id!, user.socksPassword!, "localhost", echoPort);
                     socket.write(`hello ${i}`);
                     await new Promise((resolve) => socket.once("data", resolve));
                     // most end politely, some are reset (RST, no end event on the gateway)
@@ -962,6 +1071,16 @@ describe("ssh server", () => {
         it("returns 404 for missing files", async () => {
             const res = await get("/missing.txt");
             expect(res.status).toBe(404);
+        });
+
+        it("asks visitors for the --auth password before listing anything", async () => {
+            user.publicAuth = { account: "alice", password: "secret" };
+            try {
+                expect((await get("/")).status).toBe(401);
+                expect((await get("/", { Authorization: `Basic ${Buffer.from("alice:secret").toString("base64")}` })).status).toBe(200);
+            } finally {
+                user.publicAuth = null;
+            }
         });
 
         it("redirects symlinks inside the directory", async () => {

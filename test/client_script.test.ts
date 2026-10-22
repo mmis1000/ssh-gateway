@@ -101,6 +101,8 @@ describe.skipIf(!hasScript)("client script", () => {
         portAnswers?: string[];
         /** answers to the directory question in folder mode, the last one must be valid */
         dirAnswers?: string[];
+        /** answers to the visitor user name and password questions, default is no password */
+        authAnswers?: string[];
         /** resolve after the answers instead of waiting for the tunnel */
         noWait?: boolean;
     }
@@ -136,6 +138,22 @@ describe.skipIf(!hasScript)("client script", () => {
         };
         await answer("http entry", "Please enter a port number", options.portAnswers ?? [String(options.folder ? 0 : targetPort)]);
         if (options.folder) await answer("static directory", "is not a directory.", options.dirAnswers ?? [root]);
+        // a user name, followed by a password unless the name is refused, an empty name ends the questions
+        let complaints = 0;
+        let passwordsAsked = 0;
+        for (const [index, text] of (options.authAnswers ?? [""]).entries()) {
+            if (index > 0 && count("Password for ") > passwordsAsked) {
+                await prompt("Password for ", ++passwordsAsked);
+            } else if (index === 0) {
+                await prompt("Ask visitors for a user name");
+            } else {
+                // the user name question is redrawn while typing, count the complaints instead
+                await prompt("Try again, ", ++complaints);
+            }
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            type(`${text}\r`);
+            await new Promise((resolve) => setTimeout(resolve, 300));
+        }
         if (options.noWait) return { terminal, scriptPid: 0, type, output: () => output, prompt };
         await prompt("Press Ctrl+C to stop.");
         await waitFor(() => user.tunnelConnection !== null, 10000, "the tunnel");
@@ -223,6 +241,7 @@ describe.skipIf(!hasScript)("client script", () => {
                 expect(await run.exited).toBe(0);
                 expect(run.output()).toMatch(/^Usage: run-\w+\.sh \[options\]/);
                 expect(run.output()).toContain("-p, --port PORT");
+                expect(run.output()).toContain("-a, --auth USER:PASSWORD");
                 expect(run.output()).toContain("Opens a tunnel from 127.0.0.1 to this computer.");
             }
             await expect(readFile(path.join(workDir(user), "known_hosts"))).rejects.toThrow();
@@ -237,6 +256,9 @@ describe.skipIf(!hasScript)("client script", () => {
             ["a bad port", ["-y", "-p", "http"], "--port needs a port number between 1 and 65535"],
             ["port 0", ["-y", "-p", "0"], "Use --dir to share a directory"],
             ["a missing directory", ["-y", "-d", "/no/such/dir"], "/no/such/dir is not a directory"],
+            ["--auth without a value", ["--auth"], "--auth needs USER:PASSWORD, see --help"],
+            ["--auth without a colon", ["-y", "-p", "8080", "--auth", "alice"], "--auth needs USER:PASSWORD, the user name without a colon"],
+            ["--auth with an empty password", ["-y", "-p", "8080", "-a", "alice:"], "--auth needs USER:PASSWORD, the user name without a colon"],
         ])("stops with a message for %s", async (_, args, message) => {
             const user = await store.create();
             const run = runWithoutTerminal(await writeScript(user), args);
@@ -262,6 +284,27 @@ describe.skipIf(!hasScript)("client script", () => {
             await waitFor(() => run.output().includes("Press Ctrl+C to stop."), 30000, `the tunnel, output:\n${run.output()}`);
             expect(run.output()).not.toContain("EULA");
             expect(user.httpPort).toBe(targetPort);
+            process.kill(run.child.pid!, "SIGTERM");
+            await expectStopped(user, run.child.pid!);
+        });
+
+        it("asks visitors for a password with --auth", async () => {
+            const user = await store.create();
+            const run = runWithoutTerminal(await writeScript(user), ["-p", String(targetPort), "-y", "-a", "alice:pa ss:word"]);
+            await waitFor(() => run.output().includes("Press Ctrl+C to stop."), 30000, `the tunnel, output:\n${run.output()}`);
+            expect(run.output()).toContain("Visitors are asked for the user name alice");
+            expect(user.publicAuth).toEqual({ account: "alice", password: "pa ss:word" });
+            process.kill(run.child.pid!, "SIGTERM");
+            await expectStopped(user, run.child.pid!);
+        });
+
+        it("takes the password from GATEWAY_AUTH and keeps it out of ps", async () => {
+            const user = await store.create();
+            const secret = `env-secret-${user.id}`;
+            const run = runWithoutTerminal(await writeScript(user), ["-p", String(targetPort), "-y"], { GATEWAY_AUTH: `alice:${secret}` });
+            await waitFor(() => run.output().includes("Press Ctrl+C to stop."), 30000, `the tunnel, output:\n${run.output()}`);
+            expect(user.publicAuth).toEqual({ account: "alice", password: secret });
+            expect(await pgrep(secret)).toEqual([]);
             process.kill(run.child.pid!, "SIGTERM");
             await expectStopped(user, run.child.pid!);
         });
@@ -339,6 +382,30 @@ describe.skipIf(!hasScript)("client script", () => {
             expect(run.output()).toContain(`${path.join(root, "missing")} is not a directory.`);
             // ~ is expanded to the home directory
             expect(user.staticDirectory).toBe(home);
+            run.type("\x03");
+            await expectStopped(user, run.scriptPid);
+        });
+
+        it("asks for a visitor password and does not echo it", async () => {
+            const user = await store.create();
+            const run = await start(user, await writeScript(user), {
+                // a colon in the user name and an empty password are asked again
+                authAnswers: ["al:ice", "alice", "", "alice", "pa ss:word"],
+            });
+            expect(run.output()).toContain("Try again, the user name can not contain a colon.");
+            expect(run.output()).toContain("Try again, the password can not be empty.");
+            expect(run.output()).not.toContain("pa ss:word");
+            expect(run.output()).toContain("Visitors are asked for the user name alice");
+            expect(user.publicAuth).toEqual({ account: "alice", password: "pa ss:word" });
+            run.type("\x03");
+            await expectStopped(user, run.scriptPid);
+        });
+
+        it("does not ask for a visitor password when it is given already", async () => {
+            const user = await store.create();
+            const run = await start(user, await writeScript(user), { env: { GATEWAY_AUTH: "alice:secret" }, authAnswers: [] });
+            expect(run.output()).not.toContain("Ask visitors for a user name");
+            expect(user.publicAuth).toEqual({ account: "alice", password: "secret" });
             run.type("\x03");
             await expectStopped(user, run.scriptPid);
         });

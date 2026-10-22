@@ -1,6 +1,7 @@
 import { RawData } from "ws"
 import mime from "mime"
 import path from "path"
+import { createHash, timingSafeEqual } from "crypto"
 
 type CancelCallback = () => void
 type HandlerCallback<T> = (value: T) => void
@@ -301,6 +302,24 @@ export function getContentType(fileName: string) {
 }
 export function decodePath(str: string) {
     return str.split('/').map((p) => decodeURIComponent(p)).join('/')
+}
+
+const digest = (value: string) => createHash('sha256').update(value).digest()
+
+/** compare a secret without leaking through timing how much of it matched */
+export function secretEquals(expected: string | null | undefined, actual: string) {
+    return typeof expected === 'string' && timingSafeEqual(digest(expected), digest(actual))
+}
+
+/** account and password of a Basic Authorization header, null when the header is not one */
+export function parseBasicAuth(header: string | undefined) {
+    const match = /^Basic\s+(\S+)\s*$/i.exec(header ?? '')
+    if (!match) return null
+    const decoded = Buffer.from(match[1], 'base64').toString('utf8')
+    // the password may contain colons, the account may not (RFC 7617)
+    const colon = decoded.indexOf(':')
+    if (colon < 0) return null
+    return { account: decoded.slice(0, colon), password: decoded.slice(colon + 1) }
 }
 
 const decoder = new TextDecoder()

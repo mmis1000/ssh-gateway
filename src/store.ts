@@ -30,13 +30,19 @@ export const GATEWAY_KEY_FILE = 'gateway_key'
 export interface UserRecord {
     id: string,
     domain: string,
+    /** logs in to the inspector and fetches the script, never sent unencrypted */
     password: string,
+    /** for the SOCKS5 proxy only, which sends it in the clear, so it must not unlock anything else */
+    socksPassword: string,
     /** ISO date */
     createdAt: string,
 }
 
 const ALPHANUMERIC = 'abcdefghijklmnopqrstuvwxyz0123456789'
 const randomString = (length: number) => Array.from({ length }, () => ALPHANUMERIC[randomInt(ALPHANUMERIC.length)]).join('')
+export const randomPassword = () => randomString(16)
+/** random characters after the readable part of new domains */
+const DOMAIN_SUFFIX_LENGTH = 6
 
 export async function readStoreVersion(saveDir: string) {
     try {
@@ -54,8 +60,11 @@ export async function initEmptyStore(saveDir: string) {
     await writeFile(paths.version, `${STORE_VERSION}\n`)
 }
 
+/** replaces user.json in one step, a crash leaves either the old or the new record */
 export async function writeUserRecord(dir: string, record: UserRecord) {
-    await writeFile(path.join(dir, USER_RECORD_FILE), JSON.stringify(record, undefined, 2) + '\n', { mode: 0o600 })
+    const file = path.join(dir, USER_RECORD_FILE)
+    await writeFile(`${file}.tmp`, JSON.stringify(record, undefined, 2) + '\n', { mode: 0o600 })
+    await rename(`${file}.tmp`, file)
 }
 
 export class UserStore {
@@ -92,9 +101,17 @@ export class UserStore {
         if (!DOMAIN_PATTERN.test(record.domain)) throw new Error(`invalid domain ${record.domain}`)
         if (this.byDomain.has(record.domain)) throw new Error(`domain ${record.domain} is already used`)
 
+        // users created before the SOCKS5 proxy had a password of its own
+        if (typeof record.socksPassword !== 'string' || record.socksPassword === '') {
+            record.socksPassword = randomPassword()
+            await writeUserRecord(dir, record)
+            this.log(`${id}: [Store] added a SOCKS5 password, the old one stops working for SOCKS5`)
+        }
+
         return new User({
             id: record.id,
             password: record.password,
+            socksPassword: record.socksPassword,
             domainName: record.domain,
             clientKey: await read(CLIENT_KEY_FILE),
             clientKeyPub: await read(`${CLIENT_KEY_FILE}.pub`),
@@ -136,16 +153,19 @@ export class UserStore {
         let id = randomString(10)
         while (this.byId.has(id)) id = randomString(10)
 
-        let domain: string = hri.random()
+        // adjective-animal-number alone is about 1.3M names, few enough to scan for live forwards
+        const randomDomain = (): string => `${hri.random()}-${randomString(DOMAIN_SUFFIX_LENGTH)}`
+        let domain = randomDomain()
         for (let attempt = 0; this.byDomain.has(domain) || !DOMAIN_PATTERN.test(domain); attempt++) {
             if (attempt > 100) throw new Error('unable to pick an unused domain')
-            domain = hri.random()
+            domain = randomDomain()
         }
 
         const record: UserRecord = {
             id,
             domain,
-            password: randomString(16),
+            password: randomPassword(),
+            socksPassword: randomPassword(),
             createdAt: new Date().toISOString(),
         }
 

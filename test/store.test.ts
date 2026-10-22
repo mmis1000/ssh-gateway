@@ -44,11 +44,14 @@ describe("UserStore", () => {
             id: created.id,
             domain: created.domainName,
             password: created.password,
+            socksPassword: created.socksPassword,
             createdAt: expect.stringMatching(/^\d{4}-\d\d-\d\dT/),
         });
         expect(created.id).toMatch(/^[a-z0-9]{10}$/);
         expect(created.password).toMatch(/^[a-z0-9]{16}$/);
-        expect(created.domainName).toMatch(/^[a-z]+-[a-z]+-\d+$/);
+        expect(created.socksPassword).toMatch(/^[a-z0-9]{16}$/);
+        expect(created.socksPassword).not.toBe(created.password);
+        expect(created.domainName).toMatch(/^[a-z]+-[a-z]+-\d+-[a-z0-9]{6}$/);
     });
 
     it("generates matching ed25519 key pairs without ssh-keygen", () => {
@@ -91,6 +94,27 @@ describe("UserStore", () => {
         const users = await Promise.all(Array.from({ length: 5 }, () => store.create()));
         expect(new Set(users.map((user) => user.id)).size).toBe(5);
         expect(new Set(users.map((user) => user.domainName)).size).toBe(5);
+    });
+
+    it("gives users from before the SOCKS5 password one and keeps it", async () => {
+        const user = await store.create();
+        const file = path.join(saveDir, "users", user.id!, "user.json");
+        const { socksPassword: _, ...oldRecord } = JSON.parse(await readFile(file, "utf8"));
+        await writeFile(file, JSON.stringify(oldRecord));
+
+        const logs: string[] = [];
+        const reloaded = new UserStore(saveDir, (msg) => logs.push(msg));
+        await reloaded.load();
+        const added = reloaded.getById(user.id)!.socksPassword;
+        expect(added).toMatch(/^[a-z0-9]{16}$/);
+        expect(added).not.toBe(user.password);
+        expect(logs).toContain(`${user.id}: [Store] added a SOCKS5 password, the old one stops working for SOCKS5`);
+
+        const saved = JSON.parse(await readFile(file, "utf8"));
+        expect(saved).toEqual({ ...oldRecord, socksPassword: added });
+        expect(await mode(file)).toBe(0o600);
+        expect((await readdir(path.dirname(file))).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+        expect((await openTestStore(saveDir)).getById(user.id)!.socksPassword).toBe(added);
     });
 
     it("skips broken user directories and leftover temporary directories", async () => {

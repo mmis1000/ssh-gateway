@@ -1,7 +1,7 @@
 const inspect = require('util').inspect;
 import { Client, SFTPWrapper, ServerChannel } from 'ssh2';
 import { Connection, TcpipBindInfo } from "ssh2";
-import { createTaskQueue } from './utils';
+import { createTaskQueue, parseBasicAuth, secretEquals } from './utils';
 import { Duplex } from 'stream';
 
 const MAX_SUICIDE_REQUEST = 3
@@ -10,6 +10,8 @@ const SUICIDE_DELAY = 30 * 1000
 export interface UserData {
     id: string,
     password: string
+    /** for the SOCKS5 proxy only, see UserRecord */
+    socksPassword: string
     domainName: string
     /** key the client logs in to the gateway with, handed out in the setup script */
     clientKey: string
@@ -17,6 +19,12 @@ export interface UserData {
     /** key the gateway logs in to the client side sshd with */
     gatewayKey: string
     gatewayKeyPub: string
+}
+
+/** what visitors of the public url must sign in with, from run.sh --auth */
+export interface PublicAuth {
+    account: string
+    password: string
 }
 
 export enum Protocol {
@@ -37,10 +45,13 @@ class User {
     gatewayKeyPub: string | null
     domainName: string | null
     password: string | null
+    socksPassword: string | null
     // sshState: number
     remoteUser: string | null
     httpPort: number | null
     protocolVersion: Protocol.V0 | Protocol.V1 = Protocol.V0
+    /** set on every register, null when visitors need no password */
+    publicAuth: PublicAuth | null = null
     /** the ssh connection that holds the current tunnel, only it may tear the tunnel down */
     tunnelConnection: Connection | null = null
 
@@ -63,6 +74,7 @@ class User {
         this.gatewayKeyPub = null;
         this.domainName = null;
         this.password = null;
+        this.socksPassword = null;
 
         // this.tunnelClient = null;
         // this.tunnelInfo = null;
@@ -275,6 +287,17 @@ class User {
 
         return sftpStream
     })
+
+    /** whether a visitor with this Authorization header may use the public url */
+    allowsVisitor(authorization: string | undefined) {
+        if (!this.publicAuth) return true
+        const credential = parseBasicAuth(authorization)
+        if (!credential) return false
+        // check both, so the time taken does not tell whether the account was right
+        const accountMatches = secretEquals(this.publicAuth.account, credential.account)
+        const passwordMatches = secretEquals(this.publicAuth.password, credential.password)
+        return accountMatches && passwordMatches
+    }
 
     requestSuicideTimer () {
         console.log(`${this.id}: [User] check alive ${this.suicideRequestCount}/${MAX_SUICIDE_REQUEST}`)

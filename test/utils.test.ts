@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { formatOrigin, getContentType, parseRawData } from "../src/utils";
+import { formatOrigin, getContentType, parseBasicAuth, parseRawData, secretEquals } from "../src/utils";
 
 // mime is ESM only since v4, these make sure it still loads and resolves from the CommonJS build
 describe("getContentType", () => {
@@ -51,5 +51,46 @@ describe("formatOrigin", () => {
     it("keeps other ports", () => {
         expect(formatOrigin("https", "gateway.test", 8443)).toBe("https://gateway.test:8443");
         expect(formatOrigin("http", "gateway.test", 443)).toBe("http://gateway.test:443");
+    });
+});
+
+describe("parseBasicAuth", () => {
+    const header = (text: string) => `Basic ${Buffer.from(text).toString("base64")}`;
+
+    it("splits on the first colon only", () => {
+        expect(parseBasicAuth(header("admin:se:cr:et"))).toEqual({ account: "admin", password: "se:cr:et" });
+        expect(parseBasicAuth(header("admin:"))).toEqual({ account: "admin", password: "" });
+    });
+
+    it("keeps percent signs as they are", () => {
+        expect(parseBasicAuth(header("admin:100%"))).toEqual({ account: "admin", password: "100%" });
+    });
+
+    it("accepts any case of the scheme", () => {
+        expect(parseBasicAuth(header("a:b").replace("Basic", "basic"))).toEqual({ account: "a", password: "b" });
+    });
+
+    it.each([
+        ["no header", undefined],
+        ["another scheme", "Bearer abc"],
+        ["no colon", header("admin")],
+        ["no credential", "Basic"],
+        ["a scheme that only starts with Basic", `Basicx ${Buffer.from("a:b").toString("base64")}`],
+    ])("returns null for %s", (_, value) => {
+        expect(parseBasicAuth(value)).toBeNull();
+    });
+});
+
+describe("secretEquals", () => {
+    it("compares secrets of any length", () => {
+        expect(secretEquals("secret", "secret")).toBe(true);
+        expect(secretEquals("secret", "secre")).toBe(false);
+        expect(secretEquals("secret", "secret!")).toBe(false);
+        expect(secretEquals("", "")).toBe(true);
+    });
+
+    it("never matches a missing secret", () => {
+        expect(secretEquals(null, "")).toBe(false);
+        expect(secretEquals(undefined, "")).toBe(false);
     });
 });
