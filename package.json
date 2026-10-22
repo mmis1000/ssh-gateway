@@ -14,6 +14,10 @@
   "engines": {
     "node": ">=22.12.0"
   },
+  "allowScripts": {
+    "ssh2@1.17.0": true,
+    "cpu-features@0.0.10": true
+  },
   "author": "mmis10002@gmail.com",
   "license": "MIT",
   "dependencies": {
