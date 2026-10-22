@@ -1,0 +1,436 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>SSH Gateway · Host your own</title>
+  <meta name="description" content="Run your own SSH Gateway: a self-hosted tunnel that shares a local web server or folder over HTTPS, with only ssh on the client.">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232f6fde'/><path d='M9 11l6 5-6 5M17 22h7' stroke='white' stroke-width='3' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1d2330;
+      --muted: #5f6879;
+      --border: #e2e5eb;
+      --code-bg: #111827;
+      --code-text: #e5e7eb;
+      --code-muted: #8b93a5;
+      --accent: #2f6fde;
+      --accent-soft: #e6eefc;
+      --ok: #1f9d55;
+      --warn-bg: #fff7e6;
+      --warn-border: #f2d49b;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #15171c;
+        --panel: #1c1f26;
+        --text: #e3e6ec;
+        --muted: #9aa2b3;
+        --border: #2c313b;
+        --code-bg: #0d1016;
+        --accent: #7aa7ff;
+        --accent-soft: #1f2a40;
+        --ok: #3ccf7a;
+        --warn-bg: #2a2416;
+        --warn-border: #5a4a23;
+        color-scheme: dark;
+      }
+    }
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.6 Inter, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--accent); }
+    code { font-family: var(--mono); font-size: 0.9em; overflow-wrap: anywhere; }
+    .wrap { width: min(1040px, 100%); margin: 0 auto; padding: 0 16px; }
+
+    header.top { position: sticky; top: 0; z-index: 1; border-bottom: 1px solid var(--border); background: var(--panel); }
+    header.top .wrap { display: flex; align-items: center; gap: 16px; height: 60px; }
+    .brand { display: flex; align-items: center; gap: 10px; color: inherit; font-weight: 700; text-decoration: none; white-space: nowrap; }
+    .brand svg { width: 28px; height: 28px; }
+    .spacer { flex: 1; }
+    .nav-link { font-size: 14px; font-weight: 600; text-decoration: none; white-space: nowrap; }
+
+    .hero { padding: 56px 0 28px; }
+    .hero h1 { max-width: 16em; margin: 0 0 16px; font-size: clamp(30px, 5vw, 44px); line-height: 1.12; letter-spacing: -0.02em; }
+    .hero p { max-width: 40em; margin: 0; color: var(--muted); font-size: 18px; }
+
+    .layout { display: grid; gap: 40px; grid-template-columns: 200px minmax(0, 1fr); align-items: start; padding: 8px 0 64px; }
+    nav.toc { position: sticky; top: 84px; font-size: 14px; }
+    nav.toc ol { margin: 0; padding: 0; list-style: none; counter-reset: toc; }
+    nav.toc li { counter-increment: toc; }
+    nav.toc a { display: block; padding: 5px 0; color: var(--muted); text-decoration: none; }
+    nav.toc a::before { content: counter(toc) '. '; color: var(--accent); font-weight: 600; }
+    nav.toc a:hover { color: var(--text); }
+
+    section.step { padding: 0 0 40px; scroll-margin-top: 80px; }
+    section.step + section.step { padding-top: 40px; border-top: 1px solid var(--border); }
+    section.step h2 { display: flex; align-items: center; gap: 12px; margin: 0 0 12px; font-size: 22px; letter-spacing: -0.01em; }
+    .num {
+      flex: none; display: grid; place-items: center;
+      width: 30px; height: 30px; border-radius: 50%;
+      background: var(--accent-soft); color: var(--accent);
+      font-size: 14px; font-weight: 700;
+    }
+    section.step > p, section.step li { color: var(--muted); }
+    section.step > p strong, section.step li strong { color: var(--text); }
+    section.step ul { padding-left: 20px; }
+
+    .code { position: relative; margin: 14px 0; border-radius: 10px; background: var(--code-bg); color: var(--code-text); }
+    .code .label { padding: 8px 14px 0; color: var(--code-muted); font: 12px/1.4 var(--mono); }
+    .code pre { margin: 0; padding: 12px 14px 14px; overflow-x: auto; font: 13px/1.6 var(--mono); }
+    .code pre .c { color: var(--code-muted); }
+    .copy {
+      position: absolute; top: 8px; right: 8px;
+      padding: 4px 10px; border: 1px solid #374151; border-radius: 6px;
+      background: var(--code-bg); color: var(--code-text); font: 600 12px/1.4 inherit; cursor: pointer;
+    }
+    .copy:hover { background: #1f2937; }
+    .copy.done { border-color: var(--ok); color: var(--ok); }
+
+    .table-wrap { margin: 14px 0; overflow-x: auto; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 9px 14px; border-bottom: 1px solid var(--border); text-align: left; vertical-align: top; }
+    tr:last-child td { border-bottom: none; }
+    th { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
+    td code { white-space: nowrap; }
+    td:last-child { color: var(--muted); }
+
+    .note { margin: 14px 0; padding: 12px 16px; border: 1px solid var(--warn-border); border-radius: 10px; background: var(--warn-bg); font-size: 14px; }
+    .note strong { color: var(--text); }
+
+    .ports { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); margin: 16px 0; }
+    .port { padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+    .port strong { display: block; font-family: var(--mono); font-size: 15px; }
+    .port span { color: var(--muted); font-size: 14px; }
+    .port.closed strong { color: var(--muted); text-decoration: line-through; }
+
+    footer { padding: 28px 0 40px; border-top: 1px solid var(--border); color: var(--muted); font-size: 13px; }
+    footer .wrap { display: flex; flex-wrap: wrap; gap: 8px 20px; }
+
+    @media (max-width: 820px) {
+      /* minmax(0, ...) so wide code blocks scroll instead of widening the page */
+      .layout { grid-template-columns: minmax(0, 1fr); gap: 24px; }
+      nav.toc { position: static; padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--panel); }
+      .hero { padding-top: 36px; }
+    }
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="wrap">
+      <a class="brand" href="#">
+        <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="7" fill="#2f6fde"/><path d="M9 11l6 5-6 5M17 22h7" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        SSH Gateway
+      </a>
+      <span class="spacer"></span>
+      <a class="nav-link" href="https://github.com/mmis1000/ssh-gateway">GitHub</a>
+    </div>
+  </header>
+
+  <main>
+    <div class="wrap">
+      <section class="hero">
+        <h1>Host your own tunnel gateway.</h1>
+        <p>
+          SSH Gateway gives anyone you let in a public HTTPS address for a local web server or a folder,
+          with a request inspector and a SOCKS5 tunnel. Their machine only needs <code>ssh</code>.
+          This guide sets up the server side on one Linux machine behind nginx.
+        </p>
+      </section>
+
+      <div class="layout">
+        <nav class="toc" aria-label="Steps">
+          <ol>
+            <li><a href="#requirements">Requirements</a></li>
+            <li><a href="#dns">Domains and DNS</a></li>
+            <li><a href="#install">Install</a></li>
+            <li><a href="#config">Configure</a></li>
+            <li><a href="#tls">TLS certificate</a></li>
+            <li><a href="#nginx">nginx</a></li>
+            <li><a href="#firewall">Firewall</a></li>
+            <li><a href="#service">Run as a service</a></li>
+            <li><a href="#try">Try it</a></li>
+            <li><a href="#operate">Upgrade and back up</a></li>
+          </ol>
+        </nav>
+
+        <div>
+          <section class="step" id="requirements">
+            <h2><span class="num">1</span>Requirements</h2>
+            <ul>
+              <li><strong>A Linux server with a public IP address.</strong> Clients connect to it, it never connects out to them.</li>
+              <li><strong>Node.js 22.12 or newer</strong> and <code>git</code>.</li>
+              <li><strong>nginx</strong>, or another reverse proxy that terminates TLS and passes WebSocket upgrades. The gateway itself speaks plain HTTP.</li>
+              <li><strong>Two domains you control</strong>, one for the gateway and one for user content, see the next step.</li>
+            </ul>
+          </section>
+
+          <section class="step" id="dns">
+            <h2><span class="num">2</span>Domains and DNS</h2>
+            <p>
+              The gateway answers on two names. The <strong>setup host</strong> serves the setup script, the landing page and the inspector.
+              The <strong>content domain</strong> gets one subdomain per user, like <code>brave-otter-42-k3x9qz.ugc.example.net</code>.
+            </p>
+            <p>
+              Put user content on a <strong>different registrable domain</strong> than the setup host (<code>example.net</code> next to <code>example.com</code>,
+              not <code>ugc.example.com</code>). Pages your users share then can not read or set cookies of your main site.
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Name</th><th>Type</th><th>Points to</th></tr></thead>
+                <tbody>
+                  <tr><td><code>gateway.example.com</code></td><td>A / AAAA</td><td>your server</td></tr>
+                  <tr><td><code>ugc.example.net</code></td><td>A / AAAA</td><td>your server</td></tr>
+                  <tr><td><code>*.ugc.example.net</code></td><td>A / AAAA</td><td>your server, the wildcard covers every user</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>The rest of this guide uses these names, replace them with yours.</p>
+          </section>
+
+          <section class="step" id="install">
+            <h2><span class="num">3</span>Install</h2>
+            <p>Build the server and the inspector app. The inspector has its own <code>package.json</code> in <code>app/</code>.</p>
+            <div class="code"><button class="copy" type="button">Copy</button><pre>git clone https://github.com/mmis1000/ssh-gateway.git /opt/ssh-gateway
+cd /opt/ssh-gateway
+npm ci
+(cd app &amp;&amp; npm ci)
+npm run build</pre></div>
+            <p>Run it as its own user, which owns the project directory, so the data it keeps stays private:</p>
+            <div class="code"><button class="copy" type="button">Copy</button><pre>sudo useradd --system --home-dir /opt/ssh-gateway --shell /usr/sbin/nologin ssh-gateway
+sudo chown -R ssh-gateway: /opt/ssh-gateway</pre></div>
+          </section>
+
+          <section class="step" id="config">
+            <h2><span class="num">4</span>Configure</h2>
+            <p>Start from the example and edit <code>config.json</code> in the project directory:</p>
+            <div class="code"><button class="copy" type="button">Copy</button><pre>cp config-example.json config.json</pre></div>
+            <div class="code"><div class="label">config.json</div><button class="copy" type="button">Copy</button><pre>{
+    "setupProtocol": "https",
+    "setupHost": "gateway.example.com",
+    "setupPort": 443,
+    "httpProtocol": "https",
+    "httpHost": "ugc.example.net",
+    "httpPort": 443,
+    "httpListen": 11080,
+    "sshHost": "gateway.example.com",
+    "sshPort": 11020,
+    "sshListen": 11020,
+    "socksHost": "gateway.example.com",
+    "socksPort": 11081,
+    "socksListen": 11081,
+    "userListenPortLow": 30020,
+    "userListenPortHigh": 30099,
+    "trustedProxy": "localhost",
+    "saveDir": "save",
+    "setupRequireAuth": true,
+    "setupAccount": "admin",
+    "setupPassword": "a long random password"
+}</pre></div>
+            <p>
+              Each service has a <strong>public</strong> host and port, printed in links and scripts, and a <strong>listen</strong> port the gateway binds.
+              They differ when something sits in between, like nginx for HTTP or port forwarding on a router.
+            </p>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Field</th><th>Meaning</th></tr></thead>
+                <tbody>
+                  <tr><td><code>setupProtocol</code> <code>setupHost</code> <code>setupPort</code></td><td>Public address of the setup host.</td></tr>
+                  <tr><td><code>httpProtocol</code> <code>httpHost</code> <code>httpPort</code></td><td>Public address of the content domain. Users get <code>&lt;name&gt;.httpHost</code>.</td></tr>
+                  <tr><td><code>httpListen</code></td><td>Port of the gateway's HTTP server, for both hosts. nginx proxies to it, keep it closed to the internet.</td></tr>
+                  <tr><td><code>sshHost</code> <code>sshPort</code> / <code>sshListen</code></td><td>Where client scripts connect, and the port the SSH server binds.</td></tr>
+                  <tr><td><code>socksHost</code> <code>socksPort</code> / <code>socksListen</code></td><td>The SOCKS5 tunnel into folder mode clients, public and bound.</td></tr>
+                  <tr><td><code>userListenPortLow</code> <code>userListenPortHigh</code></td><td>Range the folder mode <code>sshd</code> picks a random port from, <em>on the client machine</em>. Pick a range that is free there.</td></tr>
+                  <tr><td><code>trustedProxy</code></td><td>Who may set <code>X-Forwarded-For</code>. <code>localhost</code> trusts nginx on the same machine, so the inspector shows real visitor addresses.</td></tr>
+                  <tr><td><code>saveDir</code></td><td>Users, their keys and the SSH host keys. Relative to the directory the gateway is started in.</td></tr>
+                  <tr><td><code>setupRequireAuth</code> <code>setupAccount</code> <code>setupPassword</code></td><td>Ask for this account before handing out a new script. Leave it on unless anyone on the internet should get a tunnel.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="step" id="tls">
+            <h2><span class="num">5</span>TLS certificate</h2>
+            <p>
+              One certificate covers the setup host, the content domain and its wildcard. Wildcard certificates need a
+              <strong>DNS challenge</strong>, the gateway does not answer HTTP challenges on user subdomains.
+              With Let's Encrypt, use the certbot plugin for your DNS provider, for example Cloudflare:
+            </p>
+            <div class="code"><button class="copy" type="button">Copy</button><pre>sudo certbot certonly --dns-cloudflare \
+    --dns-cloudflare-credentials /root/.secrets/cloudflare.ini \
+    -d gateway.example.com -d ugc.example.net -d '*.ugc.example.net'</pre></div>
+            <p>Other providers have their own plugins (<code>certbot-dns-route53</code>, <code>certbot-dns-digitalocean</code>, …), or use acme.sh. Renewal then runs on its own.</p>
+          </section>
+
+          <section class="step" id="nginx">
+            <h2><span class="num">6</span>nginx</h2>
+            <p>
+              nginx terminates TLS for both domains and passes everything to <code>httpListen</code>, keeping the <code>Host</code> header,
+              which is how the gateway tells the setup host and every user apart. Upgrades must pass through for the inspector and for
+              users' WebSockets, and buffering is off so requests and responses stream through the tunnel.
+            </p>
+            <div class="code"><div class="label">/etc/nginx/conf.d/ssh-gateway.conf</div><button class="copy" type="button">Copy</button><pre>map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name gateway.example.com ugc.example.net *.ugc.example.net;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name gateway.example.com ugc.example.net *.ugc.example.net;
+
+    ssl_certificate     /etc/letsencrypt/live/gateway.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/gateway.example.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:11080;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        <span class="c"># stream bodies through the tunnel instead of holding them here</span>
+        proxy_buffering off;
+        proxy_request_buffering off;
+        client_max_body_size 0;
+        <span class="c"># long polling and WebSockets stay open</span>
+        proxy_read_timeout 1h;
+        proxy_send_timeout 1h;
+    }
+}</pre></div>
+            <p>
+              nginx before 1.25.1 does not know <code>http2 on;</code>, write <code>listen 443 ssl http2;</code> there instead.
+              Check and reload with <code>sudo nginx -t &amp;&amp; sudo systemctl reload nginx</code>.
+            </p>
+          </section>
+
+          <section class="step" id="firewall">
+            <h2><span class="num">7</span>Firewall</h2>
+            <p>SSH and SOCKS5 go straight to the gateway, not through nginx. The gateway binds every interface, so close the internal HTTP port.</p>
+            <div class="ports">
+              <div class="port"><strong>80, 443</strong><span>nginx, open</span></div>
+              <div class="port"><strong>11020</strong><span><code>sshPort</code>, open, clients connect here</span></div>
+              <div class="port"><strong>11081</strong><span><code>socksPort</code>, open</span></div>
+              <div class="port closed"><strong>11080</strong><span><code>httpListen</code>, closed, only nginx uses it</span></div>
+            </div>
+            <div class="code"><div class="label">with ufw, which denies everything else by default</div><button class="copy" type="button">Copy</button><pre>sudo ufw allow 80,443/tcp
+sudo ufw allow 11020/tcp
+sudo ufw allow 11081/tcp</pre></div>
+            <p>Some office and hotel networks block ports other than 80 and 443. Clients there can not reach <code>sshPort</code>.</p>
+          </section>
+
+          <section class="step" id="service">
+            <h2><span class="num">8</span>Run as a service</h2>
+            <p>
+              The gateway reads <code>config.json</code> from the project directory and resolves <code>saveDir</code> and the inspector app
+              against the directory it is started in, so <code>WorkingDirectory</code> must be the project directory.
+            </p>
+            <div class="code"><div class="label">/etc/systemd/system/ssh-gateway.service</div><button class="copy" type="button">Copy</button><pre>[Unit]
+Description=SSH Gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ssh-gateway
+WorkingDirectory=/opt/ssh-gateway
+ExecStart=/usr/bin/node index.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target</pre></div>
+            <div class="code"><button class="copy" type="button">Copy</button><pre>sudo systemctl daemon-reload
+sudo systemctl enable --now ssh-gateway
+journalctl -u ssh-gateway -f</pre></div>
+            <p>
+              On the first start it creates <code>save/</code> and generates the SSH host keys, and the log ends with the
+              <code>curl</code> command to set up a client.
+            </p>
+          </section>
+
+          <section class="step" id="try">
+            <h2><span class="num">9</span>Try it</h2>
+            <p>Open <code>https://gateway.example.com/</code> in a browser for the landing page your users see. Then, on any machine with <code>ssh</code>:</p>
+            <div class="code"><button class="copy" type="button">Copy</button><pre>curl -X POST -u 'admin:a long random password' https://gateway.example.com/setup &gt; run.sh
+chmod +x run.sh
+./run.sh</pre></div>
+            <p>
+              Each <code>/setup</code> creates a new user with its own address and keys, so hand out one script per person or machine.
+              The script prints its public address, the inspector link and the SOCKS5 tunnel; <code>./run.sh --help</code> lists its options.
+            </p>
+          </section>
+
+          <section class="step" id="operate">
+            <h2><span class="num">10</span>Upgrade and back up</h2>
+            <p><strong>Back up <code>save/</code>.</strong> It holds every user and the host keys. Losing the host keys makes every client script refuse to connect, since scripts trust only the keys they were made with.</p>
+            <div class="code"><div class="label">upgrade</div><button class="copy" type="button">Copy</button><pre>cd /opt/ssh-gateway
+sudo -u ssh-gateway git pull
+sudo -u ssh-gateway npm ci
+sudo -u ssh-gateway sh -c 'cd app &amp;&amp; npm ci'
+sudo -u ssh-gateway npm run build
+sudo systemctl restart ssh-gateway</pre></div>
+            <p>
+              Data from older versions is migrated on start, the old files are kept in <code>save.backup-v1-&lt;time&gt;/</code>.
+              To see what would happen first, run <code>npm run migrate -- --dry-run</code>. When a newer client script is available,
+              old scripts print the command to update themselves the next time they connect.
+            </p>
+            <div class="note">
+              <strong>What the gateway can reach.</strong> In folder mode the client runs an <code>sshd</code> as the user, which lets
+              the gateway read any file that user can, not only the shared folder, and connect to local ports for the SOCKS5 tunnel.
+              Whoever runs the gateway is trusted with that, so tell your users.
+            </div>
+          </section>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <span>SSH Gateway, MIT licensed</span>
+      <a href="https://github.com/mmis1000/ssh-gateway">Source and issues on GitHub</a>
+    </div>
+  </footer>
+
+  <script>
+    document.addEventListener('click', function (event) {
+      var button = event.target.closest('.copy')
+      if (!button) return
+      var text = button.parentElement.querySelector('pre').textContent
+      var done = function () {
+        button.textContent = 'Copied'
+        button.classList.add('done')
+        setTimeout(function () { button.textContent = 'Copy'; button.classList.remove('done') }, 1500)
+      }
+      if (navigator.clipboard && window.isSecureContext) {
+        navigator.clipboard.writeText(text).then(done, function () {})
+      } else {
+        var range = document.createRange()
+        range.selectNodeContents(button.parentElement.querySelector('pre'))
+        var selection = window.getSelection()
+        selection.removeAllRanges()
+        selection.addRange(range)
+      }
+    })
+  </script>
+</body>
+</html>

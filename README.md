@@ -17,6 +17,8 @@ All without a dedicated client on your computer (only a script that uses `openss
 
 ## Setup
 
+See [docs/index.html](docs/index.html) for a step by step guide: DNS, TLS, nginx, firewall and a systemd service.
+
 1. Forward a whole domain or subdomain and its subdomain to your app
 2. Properly config the config.json
 3. Start the server
