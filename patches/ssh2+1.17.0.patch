@@ -1,0 +1,14 @@
+diff --git a/node_modules/ssh2/lib/Channel.js b/node_modules/ssh2/lib/Channel.js
+index 0120779..dcb5a05 100644
+--- a/node_modules/ssh2/lib/Channel.js
++++ b/node_modules/ssh2/lib/Channel.js
+@@ -12,7 +12,8 @@ const {
+ const { bufferSlice } = require('./protocol/utils.js');
+ 
+ const PACKET_SIZE = 32 * 1024;
+-const MAX_WINDOW = 2 * 1024 * 1024;
++// ssh-gateway: was 2 MB, which capped sftp reads over a 70 ms tunnel at about half the path speed
++const MAX_WINDOW = 8 * 1024 * 1024;
+ const WINDOW_THRESHOLD = MAX_WINDOW / 2;
+ 
+ class ClientStderr extends ReadableStream {

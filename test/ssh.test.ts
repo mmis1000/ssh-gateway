@@ -900,6 +900,26 @@ describe("ssh server", () => {
             const suffix = await get("/digits.txt", { Range: "bytes=-3" });
             expect(suffix.status).toBe(206);
             expect(suffix.body).toBe("789");
+
+            // players and download tools probe with this, it used to send the whole file
+            const first = await get("/digits.txt", { Range: "bytes=0-0" });
+            expect(first.status).toBe(206);
+            expect(first.body).toBe("0");
+            expect(first.headers["content-length"]).toBe("1");
+            expect(first.headers["content-range"]).toBe("bytes 0-0/10");
+        });
+
+        it("serves files larger than one read request", async () => {
+            const big = Buffer.from(Array.from({ length: 300 * 1024 + 7 }, (_, i) => i % 251));
+            await writeFile(path.join(www, "big.bin"), big);
+            const res = await new Promise<Buffer>((resolve, reject) => {
+                http.get({ host: "127.0.0.1", port: gateway.httpPort, path: "/big.bin", headers: { Host: host() } }, (res) => {
+                    const chunks: Buffer[] = [];
+                    res.on("data", (chunk) => chunks.push(chunk));
+                    res.on("end", () => resolve(Buffer.concat(chunks)));
+                }).on("error", reject);
+            });
+            expect(res.equals(big)).toBe(true);
         });
 
         it("rejects unsatisfiable ranges", async () => {

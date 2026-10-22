@@ -8,7 +8,8 @@
     "dev": "NODE_ENV=development npx vite-node --watch ./src/server.ts",
     "build": "tsc && cd app && npm run build",
     "test": "vitest run",
-    "migrate": "node dist/migrate_cli.js"
+    "migrate": "node dist/migrate_cli.js",
+    "postinstall": "patch-package"
   },
   "engines": {
     "node": ">=22.12.0"
@@ -23,6 +24,7 @@
     "http-proxy": "^1.16.2",
     "human-readable-ids": "^1.0.3",
     "mime": "^4.1.0",
+    "patch-package": "^8.0.1",
     "range-parser": "^1.2.0",
     "shell-quote": "^1.8.1",
     "ssh2": "^1.14.0",

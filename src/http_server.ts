@@ -397,27 +397,14 @@ Disallow: /
                             return res.end();
                         }
 
+                        // the size from the stat above saves the stream a round trip
                         if (range == null) {
-                            // readStream = sftpClient.createReadStream(fullPath);
-                            readStream = getFastReadStream(sftpClient, filePath);
+                            readStream = getFastReadStream(sftpClient, filePath, { size });
                         } else if (range !== -1 && range !== -2 && range.type === 'bytes' && range.length === 1) {
                             res.set('Content-Length', String(range[0].end - range[0].start + 1));
 
                             res.set('Content-Range', `bytes ${range[0].start}-${range[0].end}/${stats.size}`)
-                            let temp: {
-                                start?: number,
-                                end?: number
-                            } = {};
-                            if (range[0].start !== 0) {
-                                temp.start = range[0].start;
-                            }
-
-                            if (range[0].end + 1 !== size) {
-                                temp.end = range[0].end;
-                            }
-
-                            //readStream = sftpClient.createReadStream(fullPath, temp);
-                            readStream = getFastReadStream(sftpClient, filePath, temp);
+                            readStream = getFastReadStream(sftpClient, filePath, { size, start: range[0].start, end: range[0].end });
                             res.status(206);
                         } else {
                             res.set('Content-Type', 'text/html');

@@ -1,232 +1,171 @@
-import { SFTPWrapper, Stats } from 'ssh2';
+import { SFTPWrapper } from 'ssh2';
 import { Readable, ReadableOptions } from 'stream';
 
-interface Task {
-    finished: boolean
-    result: Buffer
-    size: number
+/** bytes per read request, one sftp packet (ssh2 splits reads above ~254 KB into sequential ones) */
+const CHUNK_SIZE = 64 * 1024
+/**
+ * Bytes all streams of one sftp session may have asked for and not passed on yet, together.
+ * Over a tunnel a stream moves about in-flight bytes per round trip: 4 MB filled a 70 ms
+ * Taiwan to Singapore path, more only queued up in front of the session's other requests.
+ * The ssh channel window must be larger, see patches/ssh2+*.patch.
+ */
+const SESSION_BUDGET = 4 * 1024 * 1024
+/** a stream always gets this many chunks, so a small file does not wait for a big one to finish */
+const MIN_CHUNKS = 2
+
+/**
+ * Shares the read budget of one sftp session evenly between its streams. A stream alone gets
+ * all of it, one that joins gets its share as soon as the others have that much less in flight.
+ */
+export class ReadBudget {
+    private streams = new Set<object>()
+
+    constructor(readonly bytes = SESSION_BUDGET) {}
+
+    join(stream: object) {
+        this.streams.add(stream)
+    }
+
+    leave(stream: object) {
+        this.streams.delete(stream)
+    }
+
+    /** chunks one stream may have in flight */
+    allowance(chunkSize: number) {
+        return Math.max(MIN_CHUNKS, Math.floor(this.bytes / Math.max(1, this.streams.size) / chunkSize))
+    }
+}
+
+const budgets = new WeakMap<SFTPWrapper, ReadBudget>()
+
+function budgetOf(sftp: SFTPWrapper) {
+    let budget = budgets.get(sftp)
+    if (!budget) {
+        budget = new ReadBudget()
+        budgets.set(sftp, budget)
+    }
+    return budget
+}
+
+interface Chunk {
+    position: number
+    buffer: Buffer
+    /** bytes read so far, a read may return less than asked */
     got: number
-    index: number
-    last: boolean
+    done: boolean
 }
 
-interface FastReadStreamOpts extends ReadableOptions {
+export interface FastReadStreamOptions extends ReadableOptions {
+    /** first byte to read, 0 by default */
     start?: number
+    /** last byte to read, inclusive, the end of the file by default */
     end?: number
+    /** size of the file when the caller has stat it already, saves a round trip */
+    size?: number
     chunkSize?: number
-    parallel?: number
+    /** shared with the other streams of the session by default */
+    budget?: ReadBudget
 }
 
+/**
+ * Reads a file over sftp with many requests in flight. ssh2's createReadStream waits for each
+ * chunk before asking for the next, so it moves one chunk per round trip, far too slow over a
+ * tunnel. Chunks are passed on in file order, as they arrive.
+ */
 export class FastReadStream extends Readable {
-    channel: SFTPWrapper
-    start: number
-    end: number | null
-    path: string
-    chunkSize: number
-    parallel: number
-    queueStart: null | number
-    queue: Task[]
-    paused: boolean
-    statReaded: boolean
-    handle: Buffer | null
+    readonly budget: ReadBudget
+    private chunkSize: number
+    private handle: Buffer | null = null
+    /** next byte to ask for */
+    private position: number
+    /** last byte to read, inclusive, known once the file is open */
+    private last = -1
+    /** asked for and not passed on yet, in file order */
+    private chunks: Chunk[] = []
+    /** the reader wants more, it said so in _read and push() did not say stop since */
+    private wanted = false
+    private ended = false
 
-
-    constructor(channel: SFTPWrapper, path: string, opts?: FastReadStreamOpts) {
-        opts = opts || {};
-        super(opts)
-
-        this.channel = channel;
-        this.path = path;
-
-        // both inclusive
-        this.start = opts.start || 0;
-        this.end = opts.end || null;
-
-        this.chunkSize = opts.chunkSize || 64 * 1024; // default 64kb
-        this.parallel = opts.parallel || 16; // parallel connections
-
-        this.queueStart = null; // only known after got the actual size;
-        this.queue = [];
-
-        this.paused = true;
-        this.statReaded = false;
-        this.destroyed = false;
-
-        this.handle = null;
+    constructor(private sftp: SFTPWrapper, readonly path: string, private options: FastReadStreamOptions = {}) {
+        super(options)
+        this.chunkSize = options.chunkSize ?? CHUNK_SIZE
+        this.budget = options.budget ?? budgetOf(sftp)
+        this.position = options.start ?? 0
     }
-    _getHandle() {
-        if (this.statReaded) {
-            return;
-        }
-        this.statReaded = true;
-        this.channel.open(this.path, 'r', this._onOpen.bind(this));
+
+    _construct(callback: (err?: Error | null) => void) {
+        this.sftp.open(this.path, 'r', (err, handle) => {
+            if (err) return callback(err)
+            this.handle = handle
+            if (this.options.size !== undefined) return this.opened(this.options.size, callback)
+            this.sftp.fstat(handle, (err, stats) => {
+                if (err) return callback(err)
+                this.opened(stats.size, callback)
+            })
+        })
     }
-    _onOpen(err: Error | undefined, handle: Buffer) {
-        if (this.destroyed) {
-            return;
-        }
 
-        if (err) {
-            return this.destroy(err);
-        }
-
-        this.handle = handle;
-
-        this.channel.stat(this.path, this.onStatRead.bind(this));
+    private opened(size: number, callback: (err?: Error | null) => void) {
+        this.last = Math.min(this.options.end ?? Infinity, size - 1)
+        this.budget.join(this)
+        callback()
     }
-    onStatRead(err: Error | undefined, stat: Stats) {
-        if (this.destroyed) {
-            return;
+
+    _read() {
+        this.wanted = true
+        this.pump()
+    }
+
+    /** pass on the chunks that are ready in order, then ask for more up to the allowance */
+    private pump() {
+        if (this.destroyed || this.ended) return
+
+        while (this.wanted && this.chunks.length > 0 && this.chunks[0].done) {
+            this.wanted = this.push(this.chunks.shift()!.buffer)
         }
 
-        if (err) {
-            return this.destroy(err);
+        if (this.chunks.length === 0 && this.position > this.last) {
+            this.ended = true
+            this.push(null)
+            return
         }
 
-
-        this.start = (stat.size - 1 >= this.start) ? this.start : stat.size;
-        this.end = (this.end !== null && stat.size - 1 >= this.end) ? this.end : stat.size - 1;
-
-        if (this.start >= this.end + 1) {
-            // 0 size read (wtf?)
-            this.destroy();
-        }
-
-        this.queueStart = Math.floor(this.start / this.chunkSize);
-
-        if (!this.paused) {
-            this._fetch();
+        const allowance = this.budget.allowance(this.chunkSize)
+        while (this.wanted && this.chunks.length < allowance && this.position <= this.last) {
+            const size = Math.min(this.chunkSize, this.last - this.position + 1)
+            const chunk: Chunk = { position: this.position, buffer: Buffer.allocUnsafe(size), got: 0, done: false }
+            this.position += size
+            this.chunks.push(chunk)
+            this.readInto(chunk)
         }
     }
-    _fetch() {
-        if (this.destroyed) {
-            return;
-        }
 
-        if (this.queue.length >= this.parallel) {
-            return;
-        }
+    private readInto(chunk: Chunk) {
+        const remaining = chunk.buffer.length - chunk.got
+        this.sftp.read(this.handle!, chunk.buffer, chunk.got, remaining, chunk.position + chunk.got, (err, bytesRead) => {
+            // replies to reads that were in flight when the stream was destroyed
+            if (this.destroyed) return
+            if (err) return this.destroy(err)
+            // ssh2 reports the end of the file as 0 bytes read, asking again would never end
+            if (bytesRead === 0) return this.destroy(new Error(`${this.path} changed while it was read, it is shorter than expected`))
 
-        var nextChunkIndex = this.queueStart! + this.queue.length;
-        var position = nextChunkIndex * this.chunkSize;
-
-        if (position < this.start) {
-            position = this.start;
-        }
-
-        if (position > this.end!) {
-            return;
-        }
-
-        var end = (nextChunkIndex + 1) * this.chunkSize - 1;
-
-        if (end >= this.end!) {
-            end = this.end!;
-        }
-
-        var state = {
-            finished: false,
-            result: Buffer.allocUnsafe(end - position + 1),
-            size: end - position + 1,
-            got: 0,
-            index: nextChunkIndex,
-            last: (nextChunkIndex + 1) * this.chunkSize > this.end!
-        };
-
-        // console.log(`index ${nextChunkIndex}, chunk start ${position}, chunk end ${end}, size ${end - position + 1}`)
-        this.queue.push(state);
-        // console.log('queue ++');
-        // console.log(`#${state.index} next byte read ${state.got} ${state.size - state.got} ${position + state.got}`);
-        const onread = (err: Error | undefined, bytesRead: number, buffer: Buffer, _position: number) => {
-            if (err) {
-                return this.destroy(err);
-            }
-
-
-            state.got += bytesRead;
-
-            if (state.got !== state.size) {
-                this.channel.read(this.handle!, state.result, state.got, state.size - state.got, position + state.got, onread);
-                // console.log(`#${state.index} next byte read ${state.got} ${state.size - state.got} ${position + state.got}`)
-                return;
-            }
-
-            state.finished = true;
-
-            this._doPush();
-            this._fetch();
-        }
-        this.channel.read(this.handle!, state.result, 0, state.size, position, onread);
-
-        // loop until enough queue is got
-        this._fetch();
+            chunk.got += bytesRead
+            if (chunk.got < chunk.buffer.length) return this.readInto(chunk)
+            chunk.done = true
+            this.pump()
+        })
     }
-    _doPush() {
-        var doPause = false;
-        var item: Task | null = null;
-        while (this.queue.length > 0 && this.queue[0].finished) {
-            this.queueStart!++;
-            // console.log('queueStart ++');
-            item = this.queue.shift()!;
-            // console.log('queue --');
-            doPause = !this.push(item.result);
-            // console.log(`put chunk #${item.index}`);
-            if (item.last) {
-                this.push(null);
-                this.destroy();
-            }
 
-            if (doPause) {
-                this.paused = true;
-                break;
-            }
-        }
-    }
-    _read(size: number) {
-        if (!this.statReaded) {
-            this.paused = false;
-            return this._getHandle();
-        } else if (this.paused) {
-            this.paused = false;
-            this._doPush();
-            this._fetch();
-        }
-    }
-    _destroy(originalErr: Error | null | undefined, cb: (err?: Error | undefined) => void) {
-        try {
-            this.push(null);
-        } catch (err) {
-            // nuzz
-        }
-
-        this.destroyed = true;
-
-        if (this.handle) {
-            this.channel.close(this.handle, function (err) {
-                if (err) {
-                    cb(err);
-                } else if (originalErr) {
-                    cb(originalErr);
-                } else {
-                    cb();
-                }
-            });
-        } else if (originalErr) {
-            cb(originalErr);
-        } else {
-            cb();
-        }
-    }
-    destroy(err?: Error | undefined) {
-        this._destroy(err, (err) => {
-            if (err) {
-                this.emit('error', err);
-            }
-        });
-        return this
+    _destroy(err: Error | null, callback: (err?: Error | null) => void) {
+        this.budget.leave(this)
+        const handle = this.handle
+        this.handle = null
+        if (!handle) return callback(err)
+        // the data is out already or failed for another reason, a failed close changes nothing for the reader
+        this.sftp.close(handle, () => callback(err))
     }
 }
 
-export default function getFastReadStream(channel: SFTPWrapper, path: string, opts?: FastReadStreamOpts) {
-    return new FastReadStream(channel, path, opts);
+export default function getFastReadStream(sftp: SFTPWrapper, path: string, options?: FastReadStreamOptions) {
+    return new FastReadStream(sftp, path, options);
 }
