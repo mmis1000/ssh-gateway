@@ -56,6 +56,10 @@ and password. With `--port` or `--dir` use `--auth user:password` instead, or `G
 to keep the password out of `ps`.
 The `Authorization` header is still passed on to your app.
 
+Each run saves what it shared in `~/.ssh-gateway/<host>/<id>/answers` (readable only by you, it holds the
+visitor password too). The next `./run.sh` offers to use those answers and skips every question, and
+`./run.sh --last` uses them without asking, also without a terminal.
+
 When sharing a folder, a folder with an `index.html` shows it instead of the file list. Use `--list`, or answer
 no when asked, to always show the list. Files are sent with `ETag` and `Last-Modified`, so browsers that
 already have a file get a `304` instead of reading it again through the tunnel.

@@ -5,7 +5,7 @@ function usage {
 Usage: $(basename "$0") [options]
 
 Opens a tunnel from *TARGET_HOST* to this computer. Without options it asks what to share
-and whether visitors need a password.
+and whether visitors need a password, or offers to use the answers from last time.
 
   -p, --port PORT   share the web server on local PORT
   -d, --dir DIR     share the directory DIR as a static site
@@ -15,10 +15,12 @@ and whether visitors need a password.
                     ask visitors for this user name and password. Other users of this
                     computer can see options in ps, set GATEWAY_AUTH=USER:PASSWORD instead
                     to keep it from them
+  -r, --last        share what the previous run shared, with the same settings, without
+                    asking. --auth and GATEWAY_AUTH replace its password
   -y, --yes         accept the notice below without asking
   -h, --help        show this help and exit
 
-Without a terminal (cron, services) --yes and one of --port or --dir are required.
+Without a terminal (cron, services) --last, or --yes and one of --port or --dir, are required.
 USAGE
 }
 
@@ -27,6 +29,7 @@ STATIC_DIRECTORY=""
 PUBLIC_AUTH="${GATEWAY_AUTH:-}"
 ASKED_WHAT_TO_SHARE=0
 SHOW_LIST=0
+USE_LAST=0
 ASSUME_YES=0
 while [ $# -gt 0 ]
 do
@@ -40,6 +43,7 @@ do
             [ $# -ge 2 ] || { echo "$1 needs a directory, see --help" >&2; exit 2; }
             STATIC_DIRECTORY="$2"; shift;;
         -l|--list) SHOW_LIST=1;;
+        -r|--last) USE_LAST=1;;
         -a|--auth)
             [ $# -ge 2 ] || { echo "$1 needs USER:PASSWORD, see --help" >&2; exit 2; }
             PUBLIC_AUTH="$2"; shift;;
@@ -50,6 +54,11 @@ done
 if [ -n "$FORWARD_PORT" ] && [ -n "$STATIC_DIRECTORY" ]
 then
     echo "Use either --port or --dir, not both" >&2
+    exit 2
+fi
+if [ $USE_LAST == 1 ] && [ -n "$FORWARD_PORT$STATIC_DIRECTORY" ]
+then
+    echo "--last shares what the previous run shared, it can not be used with --port or --dir" >&2
     exit 2
 fi
 # the user name can not contain a colon, the password can, neither can be empty
@@ -318,6 +327,53 @@ function ask {
     fi
 }
 
+# what the previous run shared, saved next to the keys, so only this user can read its password
+ANSWERS_FILE="$WORKDIR/answers"
+SAVED_PORT=""
+SAVED_DIR=""
+SAVED_LIST=0
+SAVED_AUTH=""
+[ -f "$ANSWERS_FILE" ] && source "$ANSWERS_FILE"
+valid_port "$SAVED_PORT" || SAVED_PORT=""
+
+# as if the saved answers were given as options, so they are checked like options
+function use_saved_answers {
+    if [ "$((10#$SAVED_PORT))" == 0 ]
+    then
+        STATIC_DIRECTORY="$SAVED_DIR"
+    else
+        FORWARD_PORT="$SAVED_PORT"
+    fi
+    [ "$SAVED_LIST" == 1 ] && SHOW_LIST=1
+    [ -z "$PUBLIC_AUTH" ] && PUBLIC_AUTH="$SAVED_AUTH"
+    # the notice was accepted by the run that saved them
+    ASSUME_YES=1
+}
+
+function describe_saved_answers {
+    if [ "$((10#$SAVED_PORT))" == 0 ]
+    then
+        printf 'share folder %s' "$SAVED_DIR"
+        [ "$SAVED_LIST" == 1 ] && printf ', file lists'
+    else
+        printf 'share port %s' "$SAVED_PORT"
+    fi
+    if [ -n "$SAVED_AUTH" ]
+    then
+        printf ', visitors sign in as %s' "${SAVED_AUTH%%:*}"
+    fi
+}
+
+if [ $USE_LAST == 1 ]
+then
+    [ -n "$SAVED_PORT" ] || { echo "No answers from an earlier run yet, run once without --last" >&2; exit 2; }
+    use_saved_answers
+elif [ -z "$FORWARD_PORT$STATIC_DIRECTORY" ] && [ -n "$SAVED_PORT" ] && [ -t 0 ]
+then
+    read -p "Use the answers from last time ($(describe_saved_answers))? [Y/n]: " ANSWER || exit 2
+    [[ "$ANSWER" =~ ^[nN] ]] || use_saved_answers
+fi
+
 if [ $ASSUME_YES == 0 ]
 then
     need_terminal "to accept the notice" "--yes"
@@ -394,6 +450,23 @@ then
     done
     unset AUTH_USER AUTH_PASSWORD
 fi
+
+# for the next run, see ANSWERS_FILE
+(
+    umask 077
+    {
+        printf 'SAVED_PORT=%q\n' "$FORWARD_PORT"
+        if [ "$FORWARD_PORT" == 0 ]
+        then
+            printf 'SAVED_DIR=%q\n' "$STATIC_DIRECTORY"
+            printf 'SAVED_LIST=%q\n' "$SHOW_LIST"
+        fi
+        if [ -n "$PUBLIC_AUTH" ]
+        then
+            printf 'SAVED_AUTH=%q\n' "$PUBLIC_AUTH"
+        fi
+    } > "$ANSWERS_FILE.tmp"
+) && mv "$ANSWERS_FILE.tmp" "$ANSWERS_FILE"
 
 # setup keys
 cd "$WORKDIR" || exit 1

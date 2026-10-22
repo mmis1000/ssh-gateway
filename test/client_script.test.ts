@@ -101,6 +101,8 @@ describe.skipIf(!hasScript)("client script", () => {
         portAnswers?: string[];
         /** answers to the directory question in folder mode, the last one must be valid */
         dirAnswers?: string[];
+        /** answer to the offer to use the answers from last time when it comes, default is no */
+        lastAnswer?: string;
         /** answer to the index.html question in folder mode, default is yes */
         indexAnswer?: string;
         /** answers to the visitor user name and password questions, default is no password */
@@ -126,40 +128,49 @@ describe.skipIf(!hasScript)("client script", () => {
         const count = (text: string) => output.split(text).length - 1;
         const prompt = (text: string, times = 1) => waitFor(() => count(text) >= times, 20000, `"${text}" in the output:\n${output}`);
 
-        await prompt("press any key");
-        type("y");
-        // answers are prefilled (8080, the current directory), clear them first. The line editor
-        // redraws the question when typing, so count the complaints to know a question is asked again
-        const answer = async (question: string, complaint: string, answers: string[]) => {
-            for (const [index, text] of answers.entries()) {
-                if (index === 0) await prompt(question);
-                else await prompt(complaint, index);
-                await new Promise((resolve) => setTimeout(resolve, 300));
-                type(`\x15${text}\r`);
-            }
-        };
-        await answer("http entry", "Please enter a port number", options.portAnswers ?? [String(options.folder ? 0 : targetPort)]);
-        if (options.folder) {
-            await answer("static directory", "is not a directory.", options.dirAnswers ?? [root]);
-            await prompt("Show index.html of folders");
+        const offer = "Use the answers from last time";
+        await waitFor(() => count("press any key") > 0 || count(offer) > 0, 20000, () => `the notice or the offer in the output:\n${output}`);
+        const reused = count(offer) > 0 && !/^[nN]/.test(options.lastAnswer ?? "n");
+        if (count(offer) > 0) {
             await new Promise((resolve) => setTimeout(resolve, 300));
-            type(`${options.indexAnswer ?? ""}\r`);
+            type(`${options.lastAnswer ?? "n"}\r`);
         }
-        // a user name, followed by a password unless the name is refused, an empty name ends the questions
-        let complaints = 0;
-        let passwordsAsked = 0;
-        for (const [index, text] of (options.authAnswers ?? [""]).entries()) {
-            if (index > 0 && count("Password for ") > passwordsAsked) {
-                await prompt("Password for ", ++passwordsAsked);
-            } else if (index === 0) {
-                await prompt("Ask visitors for a user name");
-            } else {
-                // the user name question is redrawn while typing, count the complaints instead
-                await prompt("Try again, ", ++complaints);
+        if (!reused) {
+            await prompt("press any key");
+            type("y");
+            // answers are prefilled (8080, the current directory), clear them first. The line editor
+            // redraws the question when typing, so count the complaints to know a question is asked again
+            const answer = async (question: string, complaint: string, answers: string[]) => {
+                for (const [index, text] of answers.entries()) {
+                    if (index === 0) await prompt(question);
+                    else await prompt(complaint, index);
+                    await new Promise((resolve) => setTimeout(resolve, 300));
+                    type(`\x15${text}\r`);
+                }
+            };
+            await answer("http entry", "Please enter a port number", options.portAnswers ?? [String(options.folder ? 0 : targetPort)]);
+            if (options.folder) {
+                await answer("static directory", "is not a directory.", options.dirAnswers ?? [root]);
+                await prompt("Show index.html of folders");
+                await new Promise((resolve) => setTimeout(resolve, 300));
+                type(`${options.indexAnswer ?? ""}\r`);
             }
-            await new Promise((resolve) => setTimeout(resolve, 300));
-            type(`${text}\r`);
-            await new Promise((resolve) => setTimeout(resolve, 300));
+            // a user name, followed by a password unless the name is refused, an empty name ends the questions
+            let complaints = 0;
+            let passwordsAsked = 0;
+            for (const [index, text] of (options.authAnswers ?? [""]).entries()) {
+                if (index > 0 && count("Password for ") > passwordsAsked) {
+                    await prompt("Password for ", ++passwordsAsked);
+                } else if (index === 0) {
+                    await prompt("Ask visitors for a user name");
+                } else {
+                    // the user name question is redrawn while typing, count the complaints instead
+                    await prompt("Try again, ", ++complaints);
+                }
+                await new Promise((resolve) => setTimeout(resolve, 300));
+                type(`${text}\r`);
+                await new Promise((resolve) => setTimeout(resolve, 300));
+            }
         }
         if (options.noWait) return { terminal, scriptPid: 0, type, output: () => output, prompt };
         await prompt("Press Ctrl+C to stop.");
@@ -250,6 +261,7 @@ describe.skipIf(!hasScript)("client script", () => {
                 expect(run.output()).toContain("-p, --port PORT");
                 expect(run.output()).toContain("-a, --auth USER:PASSWORD");
                 expect(run.output()).toContain("-l, --list");
+                expect(run.output()).toContain("-r, --last");
                 expect(run.output()).toContain("Opens a tunnel from 127.0.0.1 to this computer.");
             }
             await expect(readFile(path.join(workDir(user), "known_hosts"))).rejects.toThrow();
@@ -265,6 +277,8 @@ describe.skipIf(!hasScript)("client script", () => {
             ["port 0", ["-y", "-p", "0"], "Use --dir to share a directory"],
             ["a missing directory", ["-y", "-d", "/no/such/dir"], "/no/such/dir is not a directory"],
             ["--auth without a value", ["--auth"], "--auth needs USER:PASSWORD, see --help"],
+            ["--last before any run", ["--last"], "No answers from an earlier run yet, run once without --last"],
+            ["--last with --port", ["--last", "-p", "8080"], "--last shares what the previous run shared, it can not be used with --port or --dir"],
             ["--auth without a colon", ["-y", "-p", "8080", "--auth", "alice"], "--auth needs USER:PASSWORD, the user name without a colon"],
             ["--auth with an empty password", ["-y", "-p", "8080", "-a", "alice:"], "--auth needs USER:PASSWORD, the user name without a colon"],
         ])("stops with a message for %s", async (_, args, message) => {
@@ -324,6 +338,28 @@ describe.skipIf(!hasScript)("client script", () => {
             expect(user.serveIndex).toBe(false);
             process.kill(run.child.pid!, "SIGTERM");
             await expectStopped(user, run.child.pid!);
+        });
+
+        it("shares what the previous run shared with --last, --auth or GATEWAY_AUTH replace its password", async () => {
+            const user = await store.create();
+            const scriptFile = await writeScript(user);
+            const first = runWithoutTerminal(scriptFile, ["-p", String(targetPort), "-y", "-a", "bob:first"]);
+            await waitFor(() => first.output().includes("Press Ctrl+C to stop."), 30000, `the tunnel, output:\n${first.output()}`);
+            process.kill(first.child.pid!, "SIGTERM");
+            await expectStopped(user, first.child.pid!);
+
+            const again = runWithoutTerminal(scriptFile, ["--last"]);
+            await waitFor(() => again.output().includes("Press Ctrl+C to stop."), 30000, `the tunnel, output:\n${again.output()}`);
+            expect(user.httpPort).toBe(targetPort);
+            expect(user.publicAuth).toEqual({ account: "bob", password: "first" });
+            process.kill(again.child.pid!, "SIGTERM");
+            await expectStopped(user, again.child.pid!);
+
+            const replaced = runWithoutTerminal(scriptFile, ["--last"], { GATEWAY_AUTH: "carol:second" });
+            await waitFor(() => replaced.output().includes("Press Ctrl+C to stop."), 30000, `the tunnel, output:\n${replaced.output()}`);
+            expect(user.publicAuth).toEqual({ account: "carol", password: "second" });
+            process.kill(replaced.child.pid!, "SIGTERM");
+            await expectStopped(user, replaced.child.pid!);
         });
 
         it("shares a directory without asking, ~ expanded", async () => {
@@ -417,6 +453,41 @@ describe.skipIf(!hasScript)("client script", () => {
             expect(user.publicAuth).toEqual({ account: "alice", password: "pa ss:word" });
             run.type("\x03");
             await expectStopped(user, run.scriptPid);
+        });
+
+        it("offers the answers from last time and skips every question with them", async () => {
+            const user = await store.create();
+            const scriptFile = await writeScript(user);
+            const first = await start(user, scriptFile, { folder: true, indexAnswer: "n", authAnswers: ["alice", "secret"] });
+            first.type("\x03");
+            await expectStopped(user, first.scriptPid);
+            const answers = path.join(workDir(user), "answers");
+            expect((await stat(answers)).mode & 0o777).toBe(0o600);
+
+            const second = await start(user, scriptFile, { lastAnswer: "" });
+            expect(second.output()).toContain(`Use the answers from last time (share folder ${root}, file lists, visitors sign in as alice)? [Y/n]`);
+            expect(second.output()).not.toContain("press any key");
+            expect(second.output()).not.toContain("Forward which port");
+            expect(user.staticDirectory).toBe(root);
+            expect(user.serveIndex).toBe(false);
+            expect(user.publicAuth).toEqual({ account: "alice", password: "secret" });
+            second.type("\x03");
+            await expectStopped(user, second.scriptPid);
+        });
+
+        it("asks everything again when the answers from last time are turned down", async () => {
+            const user = await store.create();
+            const scriptFile = await writeScript(user);
+            const first = await start(user, scriptFile, { authAnswers: ["alice", "secret"] });
+            first.type("\x03");
+            await expectStopped(user, first.scriptPid);
+
+            const second = await start(user, scriptFile, { lastAnswer: "n", folder: true });
+            expect(second.output()).toContain(`Use the answers from last time (share port ${targetPort}, visitors sign in as alice)? [Y/n]`);
+            expect(user.httpPort).toBe(0);
+            expect(user.publicAuth).toBeNull();
+            second.type("\x03");
+            await expectStopped(user, second.scriptPid);
         });
 
         it("shows the file list when index.html is turned down", async () => {
