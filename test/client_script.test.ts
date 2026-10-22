@@ -1,7 +1,8 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ChildProcess, execFile, execFileSync, spawn } from "child_process";
-import { mkdir, readFile, stat, writeFile } from "fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "fs/promises";
 import os from "os";
+import { statSync } from "fs";
 import net from "net";
 import path from "path";
 import { renderClientScript } from "../src/http_server";
@@ -9,7 +10,7 @@ import { knownHostsLines, loadHostKeys } from "../src/keys";
 import { createSshServer } from "../src/ssh_server";
 import { UserStore } from "../src/store";
 import { User } from "../src/user";
-import { createConfig, createTempDir, openTestStore } from "./helpers";
+import { createConfig, openTestStore } from "./helpers";
 
 // Runs the real run.sh in a pseudo terminal (util-linux `script`), types the answers like a
 // user and checks what is left after ctrl+c, closing the terminal, kill and so on.
@@ -48,7 +49,11 @@ describe.skipIf(!hasScript)("client script", () => {
     const terminals: ChildProcess[] = [];
 
     beforeAll(async () => {
-        ({ dir: root, cleanup } = await createTempDir());
+        // sshd refuses keys below a world writable directory like /tmp (StrictModes), and folder
+        // mode only says the tunnel is up once the gateway got in, so the home is not under /tmp
+        await mkdir(path.join(os.homedir(), ".cache"), { recursive: true });
+        root = await mkdtemp(path.join(os.homedir(), ".cache", "sgw-"));
+        cleanup = () => rm(root, { recursive: true, force: true });
         // a space in the home directory exercises the quoting in the script
         home = path.join(root, "fake home");
         const saveDir = path.join(root, "save");
@@ -360,6 +365,22 @@ describe.skipIf(!hasScript)("client script", () => {
             expect(user.publicAuth).toEqual({ account: "carol", password: "second" });
             process.kill(replaced.child.pid!, "SIGTERM");
             await expectStopped(user, replaced.child.pid!);
+        });
+
+        it.skipIf((statSync(os.tmpdir()).mode & 0o002) === 0)("stops with the reason when the gateway can not log in to its sshd", async () => {
+            const user = await store.create();
+            // sshd refuses the gateway's key below /tmp, the script itself sees nothing wrong
+            const tmpHome = await mkdtemp(path.join(os.tmpdir(), "sgw-"));
+            try {
+                const run = runWithoutTerminal(await writeScript(user), ["-d", tmpHome, "-y"], { HOME: tmpHome });
+                expect(await run.exited).toBe(1);
+                expect(run.output()).toContain("The gateway can not reach the shared folder: the gateway could not log in to the sshd of this script");
+                expect(run.output()).toMatch(/The local sshd says[^\n]*:\n {2}Authentication refused: bad ownership or modes/);
+                expect(run.output()).not.toContain("Tunnel is up");
+                await waitFor(async () => (await pgrep(`sshd -D -f ${tmpHome}`)).length === 0 && user.tunnelConnection === null, 15000, "the sshd and the tunnel to go away");
+            } finally {
+                await rm(tmpHome, { recursive: true, force: true });
+            }
         });
 
         it("shares a directory without asking, ~ expanded", async () => {

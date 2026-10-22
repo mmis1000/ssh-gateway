@@ -50,9 +50,13 @@ function killConnection(client: Connection) {
  *    netstat and with spaces in paths, refuses to run twice
  * 6: --auth asks visitors for a user name and password, a separate SOCKS5 password,
  *    --list shows the file list of folders that have an index.html
+ * 7: in folder mode, says the tunnel is up only after "check" found the folder readable
  */
-export const CLIENT_SCRIPT_VERSION = 6
+export const CLIENT_SCRIPT_VERSION = 7
 const VERSION_HEADER = /^v(\d+):$/
+/** exit code of a failed check, ssh itself exits with 255 when the connection fails */
+export const CHECK_FAILED = 3
+
 /** register flag, the client then sends user:pass as the first line on stdin */
 const AUTH_FLAG = '--auth'
 /** register flag, folders always show the file list, also when they have an index.html */
@@ -232,7 +236,39 @@ ${publicAuth ? `Visitors are asked for the user name ${publicAuth.account} and t
                     }
 
                     const flagsValid = flags.every((flag, index) => REGISTER_FLAGS.includes(flag) && flags.indexOf(flag) === index)
-                    if ((temp.length !== 3 && temp.length !== 4) || temp[0] !== 'register' || !temp[2].match(/^[1-9]\d*$|^0$/) || !flagsValid) {
+                    // "check" after the forward is up: in folder mode, can the gateway log in to the
+                    // sshd of the script and read the folder? The script's own checks can not tell,
+                    // sshd refuses the gateway's key for reasons like a home under /tmp
+                    const check = () => {
+                        const userData = client.userData!
+                        const done = (message: string | null) => {
+                            if (message) {
+                                console.log(`${userData.id}: [SSH] check failed: ${message}`);
+                                stream.stderr.write(`${message}\n`);
+                                stream.exit(CHECK_FAILED);
+                            } else {
+                                stream.write('ok\n');
+                                stream.exit(0);
+                            }
+                            stream.end();
+                        }
+                        if (userData.httpPort === null) return done('register first')
+                        // in port mode visitors reach the app straight through the forward
+                        if (userData.httpPort !== 0) return done(null)
+
+                        const directory = userData.staticDirectory!
+                        userData.getSftp().then((sftp) => {
+                            sftp.stat(directory, (err, stats) => {
+                                if (err) done(`the gateway can not read ${directory}: ${err.message}`)
+                                else if (!stats.isDirectory()) done(`${directory} is not a directory`)
+                                else done(null)
+                            })
+                        }, (err: Error) => done(`the gateway could not log in to the sshd of this script: ${err.message}`))
+                    }
+
+                    if (temp.length === 1 && temp[0] === 'check') {
+                        check()
+                    } else if ((temp.length !== 3 && temp.length !== 4) || temp[0] !== 'register' || !temp[2].match(/^[1-9]\d*$|^0$/) || !flagsValid) {
                         fail('bad register command')
                     } else if (wantsAuth) {
                         readLine(stream).then((line) => {

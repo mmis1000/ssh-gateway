@@ -133,18 +133,24 @@ class User {
                 emitter.emit()
             })
 
-            const result = new Promise<Client>((resolve) => {
+            const result = new Promise<Client>((resolve, reject) => {
                 client.on('ready', () => {
                     console.log(`${this.id}: [User] Client ready !!!`);
                     resolve(client)
                 });
+                // a refused login never gets ready, fail now instead of when the queue times out
+                client.on('error', reject)
+                client.on('close', () => reject(new Error('the sshd of the client closed the connection')))
+            })
+            result.catch(() => {
+                // let the next request try again, the queue would hand out this failure until the tunnel changes
+                if (this.clientQueue._current?.onDestroy === emitter.event) this.clientQueue.reset()
             })
 
             client.connect({
                 sock: channel,
                 username: this.remoteUser!,
                 privateKey: this.gatewayKey!,
-                debug: console.log,
             });
 
             client.on('banner', function (msg) {
@@ -218,7 +224,6 @@ class User {
                     sock: channel,
                     username: this.remoteUser!,
                     privateKey: this.gatewayKey!,
-                    debug: console.log,
                 });
 
                 client.on('banner', function (msg) {

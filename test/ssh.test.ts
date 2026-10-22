@@ -355,6 +355,7 @@ describe("ssh server", () => {
             ["v3", `v3: register ${LOCAL_USER} 8080`],
             ["v4", `v4: register ${LOCAL_USER} 8080`],
             ["v5", `v5: register ${LOCAL_USER} 8080 null`],
+            ["v6", `v6: register ${LOCAL_USER} 8080 null`],
         ])("asks %s scripts to update and still accepts them", async (_, command) => {
             const res = await session.exec(command);
             expect(res.stdout).toMatch(/^Please update this script, a newer version with fixes is available:\n/);
@@ -511,6 +512,23 @@ describe("ssh server", () => {
         it("passes through status codes", async () => {
             const res = await request(gateway.httpPort, host(), "/status/418");
             expect(res.status).toBe(418);
+        });
+
+        it("says nothing answered, without internals, when the shared port is closed", async () => {
+            // its own tunnel, a second forward on the shared session would not replace the first
+            const closedPort = await freePort();
+            const other = await gateway.store.create();
+            const otherSession = await ClientSession.create(gateway, other);
+            await otherSession.connect();
+            try {
+                expect((await otherSession.register(closedPort)).stdout).toContain("Client accepted.");
+                expect((await otherSession.forward(closedPort)).code).toBe(0);
+                const res = await request(gateway.httpPort, `${other.domainName}.${HTTP_HOST}`, "/");
+                expect(res.status).toBe(502);
+                expect(res.body).toBe("Nothing answered\nThe computer sharing this address is connected, but the app it shares did not answer.\n");
+            } finally {
+                await otherSession.disconnect();
+            }
         });
 
         it("streams requests to the inspector and replays them", async () => {
@@ -925,6 +943,8 @@ describe("ssh server", () => {
         it("rejects unsatisfiable ranges", async () => {
             const res = await get("/digits.txt", { Range: "bytes=20-30" });
             expect(res.status).toBe(416);
+            expect(res.headers["content-range"]).toBe("bytes */10");
+            expect(res.headers.etag).toBeUndefined();
         });
 
         it("redirects directories to a trailing slash", async () => {
@@ -1180,9 +1200,80 @@ describe("ssh server", () => {
             });
         });
 
-        it("returns 404 for missing files", async () => {
+        it("returns 404 for missing files, without internals", async () => {
             const res = await get("/missing.txt");
             expect(res.status).toBe(404);
+            expect(res.body).toBe("Not found\nThere is no file at this address.\n");
+        });
+
+        it("returns 403 for files the user can not read, without internals", async () => {
+            const file = path.join(www, "private.txt");
+            await writeFile(file, "private");
+            await chmod(file, 0o000);
+            try {
+                const res = await get("/private.txt");
+                expect(res.status).toBe(403);
+                expect(res.body).toBe("Not available\nThis file can not be shared.\n");
+                // the file's own length, set before the read failed, must not stay
+                expect(res.headers["content-length"]).not.toBe("7");
+            } finally {
+                await chmod(file, 0o644);
+            }
+        });
+
+        describe("check", () => {
+            const check = (target: ClientSession) => target.exec(`'v${CLIENT_SCRIPT_VERSION}:' check`);
+
+            it("passes when the gateway logs in to the client sshd and can read the folder", async () => {
+                const res = await check(session);
+                expect(res.code).toBe(0);
+                expect(res.stdout).toBe("ok\n");
+            });
+
+            it("says why when the folder can not be read", async () => {
+                expect((await session.register(0, path.join(root, "missing"))).stdout).toContain("Client accepted.");
+                try {
+                    const res = await check(session);
+                    expect(res.code).toBe(3);
+                    expect(res.stderr).toContain(`the gateway can not read ${path.join(root, "missing")}: No such file`);
+                } finally {
+                    expect((await session.register(0, www)).stdout).toContain("Client accepted.");
+                }
+            });
+
+            it("says why, right away, when the client sshd refuses the gateway", async () => {
+                // another user's gateway key, which this sshd does not have in authorized_keys
+                const stranger = await gateway.store.create();
+                const strangerSession = await ClientSession.create(gateway, stranger);
+                await strangerSession.connect();
+                try {
+                    expect((await strangerSession.register(0, www)).stdout).toContain("Client accepted.");
+                    expect((await strangerSession.forward(sshdPort)).code).toBe(0);
+                    const started = Date.now();
+                    const res = await check(strangerSession);
+                    expect(res.code).toBe(3);
+                    expect(res.stderr).toContain("the gateway could not log in to the sshd of this script: All configured authentication methods failed");
+                    // not the 25 s queue timeout
+                    expect(Date.now() - started).toBeLessThan(10000);
+
+                    // visitors get the offline page right away too, and the next request tries again
+                    for (let i = 0; i < 2; i++) {
+                        const page = await request(gateway.httpPort, `${stranger.domainName}.${HTTP_HOST}`, "/");
+                        expect(page.status).toBe(502);
+                        expect(page.body).not.toContain("authentication");
+                    }
+                } finally {
+                    await strangerSession.disconnect();
+                }
+            });
+
+            it("passes in port mode, where the gateway needs no login", async () => {
+                const portUser = await gateway.store.create();
+                const portSession = await ClientSession.create(gateway, portUser);
+                expect((await check(portSession)).stderr).toContain("register first");
+                expect((await portSession.register(8080)).stdout).toContain("Client accepted.");
+                expect((await check(portSession)).code).toBe(0);
+            });
         });
 
         it("asks visitors for the --auth password before listing anything", async () => {
@@ -1205,6 +1296,7 @@ describe("ssh server", () => {
             const res = await get("/link-outside");
             expect(res.status).toBe(403);
             expect(res.body).not.toContain("top secret");
+            expect(res.body).not.toContain(root);
         });
 
         it.each([

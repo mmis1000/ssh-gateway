@@ -491,6 +491,7 @@ fi
 # so if it is still running a second later it is listening, otherwise try another port
 function start_sshd {
     local attempt pid
+    SSHD_ERR_LINES=$(cat "$WORKDIR/sshd.err" 2>/dev/null | wc -l)
     for attempt in 1 2 3 4 5
     do
         LISTEN_PORT="$(pick_port)"
@@ -521,7 +522,7 @@ else
 fi
 
 function register {
-    local command="v6: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
+    local command="v7: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
     [ $SHOW_LIST == 1 ] && command="$command --list"
     if [ -n "$PUBLIC_AUTH" ]
     then
@@ -533,13 +534,45 @@ function register {
     fi
 }
 
-# open the connection, register and add the reverse forward
+# In folder mode the gateway logs in to the local sshd through the tunnel. sshd can refuse it
+# for reasons only it knows, like a home directory under /tmp, so ask the gateway whether it got
+# in and can read the folder. Sets CHECK_FAILURE to the gateway's answer when it could not.
+CHECK_FAILURE=""
+function check_folder {
+    CHECK_FAILURE=""
+    [ "$FORWARD_PORT" != 0 ] && return 0
+    local output status
+    output="$(ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v7: check" < /dev/null 2>&1)"
+    status=$?
+    # 3 is the gateway's answer, anything else is ssh failing to ask
+    [ $status == 3 ] && CHECK_FAILURE="$output"
+    return $status
+}
+
+# what the gateway and the local sshd said about a failed check_folder
+function explain_check_failure {
+    echo "The gateway can not reach the shared folder: $CHECK_FAILURE" >&2
+    local new_lines="$(tail -n +$((SSHD_ERR_LINES + 1)) "$WORKDIR/sshd.err" 2>/dev/null | grep -v '^Server listening' | tail -n 5)"
+    if [ -n "$new_lines" ]
+    then
+        echo "The local sshd says ($WORKDIR/sshd.err):" >&2
+        printf '%s\n' "$new_lines" | sed 's/^/  /' >&2
+    fi
+}
+
+# open the connection, register, add the reverse forward and make sure the gateway gets through
 function connect {
     ssh -N -M "${SSH_OPTS[@]}" -o "ClearAllForwardings yes" $TARGET_USER@$TARGET_HOST &
     sleep 5
     register || return 1
     sleep 1
-    ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$TUNNEL_PORT $TARGET_USER@$TARGET_HOST
+    ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$TUNNEL_PORT $TARGET_USER@$TARGET_HOST || return 1
+    if ! check_folder
+    then
+        # a connection the gateway can not use is not up, the reconnect loop tries again
+        close_master
+        return 1
+    fi
 }
 
 function tunnel_alive {
@@ -566,6 +599,11 @@ if connect && tunnel_alive
 then
     report_up
     CONNECTION_LOST=0
+elif [ -n "$CHECK_FAILURE" ]
+then
+    # trying again would not help, the setup on this computer has to change
+    explain_check_failure
+    exit 1
 else
     echo "Could not open the tunnel, retrying... (details in $RECONNECT_LOG)"
     CONNECTION_LOST=1
@@ -588,10 +626,17 @@ do
             echo "--- $(date)"
             connect
         } >> "$RECONNECT_LOG" 2>&1
+        # say it once, the loop keeps trying in case it is passing, like sshd restarting
+        if [ -n "$CHECK_FAILURE" ] && [ "$CHECK_FAILURE" != "$REPORTED_FAILURE" ]
+        then
+            explain_check_failure
+            REPORTED_FAILURE="$CHECK_FAILURE"
+        fi
     elif [ $CONNECTION_LOST == 1 ]
     then
         report_up
         CONNECTION_LOST=0
+        REPORTED_FAILURE=""
     fi
 
     sleep 1

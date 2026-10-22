@@ -108,7 +108,8 @@ describe("http server", () => {
             expect(setup.body).toContain('-a -x -o "IdentitiesOnly yes"');
             expect(setup.body).toContain('-o "StrictHostKeyChecking yes"');
             expect(setup.body).not.toContain("StrictHostKeyChecking no");
-            expect(setup.body).toContain('"v6: register');
+            expect(setup.body).toContain('"v7: register');
+            expect(setup.body).toContain('"v7: check"');
             expect(setup.body).toContain("ForceCommand internal-sftp -R");
             expect(setup.body).toContain("PermitOpen localhost:* 127.0.0.1:*");
 
@@ -225,10 +226,19 @@ describe("http server", () => {
             expect(res.body).toContain("Disallow: /");
         });
 
-        it("fails for unknown user domains", async () => {
+        it("fails for unknown user domains, with a page for browsers and text for tools", async () => {
             const res = await request(port, `no-such-user.${HTTP_HOST}`, "/index.html");
             expect(res.status).toBe(404);
-            expect(res.body).toBe("No forward is registered for this domain");
+            expect(res.headers["content-type"]).toMatch(/^text\/plain/);
+            expect(res.body).toBe("Nothing is shared here\nNo one is sharing anything at this address.\n");
+
+            const page = await request(port, `no-such-user.${HTTP_HOST}`, "/index.html", { headers: { Accept: "text/html,*/*;q=0.8" } });
+            expect(page.status).toBe(404);
+            expect(page.headers["content-type"]).toMatch(/^text\/html/);
+            expect(page.headers["cache-control"]).toBe("no-store");
+            expect(page.body).toContain("<h1>Nothing is shared here</h1>");
+            // self contained, it is served on user domains
+            expect(page.body).not.toMatch(/<(script|link)[^>]+(src|href)=/);
         });
     });
 

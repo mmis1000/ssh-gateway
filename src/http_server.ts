@@ -35,6 +35,63 @@ const getId = (name: string) => {
     return current
 }
 
+/** what a visitor of a forward is told when it can not be served, the details only go to the log */
+const VISITOR_ERRORS = {
+    'unknown-domain': [404, 'Nothing is shared here', 'No one is sharing anything at this address.'],
+    'needs-auth': [401, 'Sign in required', 'This address needs a user name and password.'],
+    'offline': [502, 'This address is offline', 'The computer sharing it is not connected right now. Try again later.'],
+    'app-unreachable': [502, 'Nothing answered', 'The computer sharing this address is connected, but the app it shares did not answer.'],
+    'not-found': [404, 'Not found', 'There is no file at this address.'],
+    'forbidden': [403, 'Not available', 'This file can not be shared.'],
+    'bad-range': [416, 'Range not satisfiable', 'The requested part is outside of the file.'],
+    'failed': [500, 'Something went wrong', 'The gateway could not finish this request. Try again later.'],
+} as const satisfies Record<string, readonly [number, string, string]>
+
+export type VisitorError = keyof typeof VISITOR_ERRORS
+
+/** headers a file response sets early, which must not stay on an error */
+const FILE_HEADERS = ['Content-Length', 'Content-Range', 'Accept-Ranges', 'ETag', 'Last-Modified']
+
+/** sftp status codes (ssh2 STATUS_CODE) */
+const SFTP_NO_SUCH_FILE = 2
+const SFTP_PERMISSION_DENIED = 3
+
+const sftpErrorKind = (err: Error): VisitorError => {
+    const code = (err as Error & { code?: unknown }).code
+    return code === SFTP_NO_SUCH_FILE ? 'not-found' : code === SFTP_PERMISSION_DENIED ? 'forbidden' : 'failed'
+}
+
+interface VisitorErrorOptions {
+    /** logged with the user id, never sent to the visitor */
+    err?: unknown
+    userId?: string | null
+    headers?: Record<string, string>
+}
+
+/** answer a visitor with an error page for browsers, plain text for everything else */
+export function sendVisitorError(req: express.Request, res: express.Response, kind: VisitorError, options: VisitorErrorOptions = {}) {
+    if (options.err !== undefined) {
+        console.error(`${options.userId ?? '<unknown user>'}: [HTTP] ${kind} for ${req.method} ${req.originalUrl}: ${inspect(options.err)}`)
+    }
+    // two failures of one request, like a proxy error followed by the pipeline's
+    if (res.locals.visitorError) return
+    if (res.headersSent) {
+        // the response is under way, all that is left is to cut it short
+        res.destroy()
+        return
+    }
+    res.locals.visitorError = kind
+
+    const [status, title, message] = VISITOR_ERRORS[kind]
+    for (const name of FILE_HEADERS) res.removeHeader(name)
+    res.status(status).set('Cache-Control', 'no-store').set(options.headers ?? {})
+    if (req.accepts(['text/plain', 'text/html']) === 'text/html') {
+        res.render('error', { status, title, message })
+    } else {
+        res.type('text/plain').end(`${title}\n${message}\n`)
+    }
+}
+
 /** like nginx: changes with the modification time or the size, whichever the edit touched */
 export function fileEtag(stats: Pick<Stats, 'mtime' | 'size'>) {
     return `"${Math.floor(stats.mtime).toString(16)}-${stats.size.toString(16)}"`
@@ -246,8 +303,7 @@ Disallow: /
         })
 
         if (!store.getByDomain(subdomain)) {
-            res.status(404).type('text/plain').end('No forward is registered for this domain')
-            return
+            return sendVisitorError(req, res, 'unknown-domain')
         }
 
         store.findByDomain(subdomain)
@@ -258,9 +314,7 @@ Disallow: /
 
             // before tracking, scanners guessing passwords should not fill the inspector
             if (!userData.allowsVisitor(req.headers.authorization)) {
-                res.setHeader('WWW-Authenticate', VISITOR_AUTH_CHALLENGE)
-                res.status(401).type('text/plain').end('This forward needs a user name and password')
-                return
+                return sendVisitorError(req, res, 'needs-auth', { headers: { 'WWW-Authenticate': VISITOR_AUTH_CHALLENGE } })
             }
 
             const tracker = inspector.track(userData.id!, req, res, { remoteAddress: req.ip ?? '' })
@@ -303,8 +357,9 @@ Disallow: /
                         path: req.originalUrl
                     })
 
+                    // also after a response started, then sendVisitorError cuts it short
                     client.on('error', function(err) {
-                        res.status(500).end(inspect(err))
+                        sendVisitorError(req, res, 'app-unreachable', { err, userId: userData.id })
                     })
 
 
@@ -314,9 +369,7 @@ Disallow: /
                         client,
                         (error) => {
                             if (error) {
-                                if (!res.headersSent) {
-                                    res.status(500).end(inspect(error))
-                                }
+                                sendVisitorError(req, res, 'app-unreachable', { err: error, userId: userData.id })
                                 try {
                                     client.destroy()
                                 } catch (err) {}
@@ -333,9 +386,7 @@ Disallow: /
                             res,
                             (error) => {
                                 if (error) {
-                                    if (!res.headersSent) {
-                                        res.status(500).end(inspect(error))
-                                    }
+                                    sendVisitorError(req, res, 'app-unreachable', { err: error, userId: userData.id })
                                     try {
                                         client.destroy()
                                     } catch (err) {}
@@ -346,7 +397,7 @@ Disallow: /
                 })
                 .catch(function(err) {
                     userData.requestSuicideTimer()
-                    res.status(500).end(inspect(err));
+                    sendVisitorError(req, res, 'offline', { err, userId: userData.id })
                 })
                 return;
             } else {
@@ -361,7 +412,7 @@ Disallow: /
 
                 const pathInMountPoint = path.relative(remoteMountPoint!, fullPath)
                 if (pathInMountPoint === '..' || pathInMountPoint.startsWith('../') || path.isAbsolute(pathInMountPoint)) {
-                    return res.status(403).end('Out of folder reading rejected');
+                    return sendVisitorError(req, res, 'forbidden')
                 }
                 
                 userData.getSftp()
@@ -407,22 +458,14 @@ Disallow: /
                             readStream = getFastReadStream(sftpClient, filePath, { size, start: range[0].start, end: range[0].end });
                             res.status(206);
                         } else {
-                            res.set('Content-Type', 'text/html');
-                            res.removeHeader('Content-Length');
-                            return res.status(416).end('range not satisfied');
+                            return sendVisitorError(req, res, 'bad-range', { headers: { 'Content-Range': `bytes */${size}` } })
                         }
 
                         readStream.on('error', function(err) {
                             if (req.closed) {
                                 return;
                             }
-                            if (res.headersSent) {
-                                res.end()
-                                return
-                            }
-                            res.set('Content-Type', 'text/plain');
-                            res.removeHeader('Content-Length');
-                            res.status(500).end(err.stack ? err.stack : err.toString());
+                            sendVisitorError(req, res, sftpErrorKind(err), { err, userId: userData.id })
                         })
                         
                         req.on('close', function () {
@@ -444,14 +487,13 @@ Disallow: /
                         console.log(`${userData.id}: [HTTP] got stat of ${fullPath}`);
                         
                         if (err) {
-                            res.set('Content-Type', 'text/plain');
-                            return res.status(404).end(inspect(err));
+                            return sendVisitorError(req, res, sftpErrorKind(err), { err, userId: userData.id })
                         }
 
                         if (stats.isSymbolicLink()) {
                             return sftpClient.readlink(fullPath, function(err, realPath) {
                                 if (err) {
-                                    return res.status(404).end(inspect(err));
+                                    return sendVisitorError(req, res, sftpErrorKind(err), { err, userId: userData.id })
                                 }
 
                                 /** `realPath` can be sometimes relative path*/
@@ -462,7 +504,7 @@ Disallow: /
                                 console.log(`${userData.id}: [HTTP] path relative to root: ${relativePath}`)
 
                                 if (relativePath.indexOf('../') >= 0) {
-                                    return res.status(403).end('Out of folder reading rejected');
+                                    return sendVisitorError(req, res, 'forbidden')
                                 }
 
                                 res.redirect(302, '/' + relativePath);
@@ -478,7 +520,7 @@ Disallow: /
                                 console.log(`${userData.id}: [HTTP] got dir res  ${fullPath}`);
 
                                 if (err) {
-                                    return res.status(404).end(inspect(err));
+                                    return sendVisitorError(req, res, sftpErrorKind(err), { err, userId: userData.id })
                                 }
 
                                 files = files.map(function(file) {
@@ -509,14 +551,15 @@ Disallow: /
                             console.log(`${userData.id}: [HTTP] is file  ${fullPath}`);
                             return sendFile(fullPath, stats)
                         } else {
-                            return res.status(403).end('file type not implemented');
+                            // sockets, devices and the like
+                            return sendVisitorError(req, res, 'forbidden')
                         }
 
                     })
                 })
                 .catch(function(err) {
                     userData.requestSuicideTimer()
-                    res.status(500).end(inspect(err));
+                    sendVisitorError(req, res, 'offline', { err, userId: userData.id })
                 })
 
                 return;
@@ -525,9 +568,7 @@ Disallow: /
         })
         .catch(function(err) {
             if (!aborted) {
-                if (!res.headersSent) {
-                    res.status(500).end(inspect(err))
-                }
+                sendVisitorError(req, res, 'failed', { err })
             }
         })
     })
@@ -583,7 +624,8 @@ Disallow: /
                 res.end(renderClientScript(template, config, userData, knownHosts))
             })
             .catch(function(err) {
-                res.status(500).end(err.stack)
+                console.error(`[HTTP] setup failed: ${inspect(err)}`)
+                res.status(500).type('text/plain').end('Could not create the user, the gateway log has the details\n')
             })
     })
 

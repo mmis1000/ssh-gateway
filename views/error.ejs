@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title><%= title %></title>
+  <style>
+    :root {
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --text: #1d2330;
+      --muted: #5f6879;
+      --border: #e2e5eb;
+      --accent: #2f6fde;
+      color-scheme: light;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #15171c;
+        --panel: #1c1f26;
+        --text: #e3e6ec;
+        --muted: #9aa2b3;
+        --border: #2c313b;
+        --accent: #7aa7ff;
+        color-scheme: dark;
+      }
+    }
+    body {
+      display: grid;
+      place-items: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 16px;
+      box-sizing: border-box;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.55 Inter, system-ui, -apple-system, 'Segoe UI', Helvetica, Arial, sans-serif;
+    }
+    main {
+      width: min(460px, 100%);
+      padding: 28px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--panel);
+    }
+    .status { margin: 0 0 6px; color: var(--accent); font: 600 13px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    h1 { margin: 0 0 10px; font-size: 22px; line-height: 1.25; }
+    p { margin: 0; color: var(--muted); }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="status"><%= status %></p>
+    <h1><%= title %></h1>
+    <p><%= message %></p>
+  </main>
+</body>
+</html>
