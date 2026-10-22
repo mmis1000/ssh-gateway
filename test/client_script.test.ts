@@ -101,6 +101,8 @@ describe.skipIf(!hasScript)("client script", () => {
         portAnswers?: string[];
         /** answers to the directory question in folder mode, the last one must be valid */
         dirAnswers?: string[];
+        /** answer to the index.html question in folder mode, default is yes */
+        indexAnswer?: string;
         /** answers to the visitor user name and password questions, default is no password */
         authAnswers?: string[];
         /** resolve after the answers instead of waiting for the tunnel */
@@ -137,7 +139,12 @@ describe.skipIf(!hasScript)("client script", () => {
             }
         };
         await answer("http entry", "Please enter a port number", options.portAnswers ?? [String(options.folder ? 0 : targetPort)]);
-        if (options.folder) await answer("static directory", "is not a directory.", options.dirAnswers ?? [root]);
+        if (options.folder) {
+            await answer("static directory", "is not a directory.", options.dirAnswers ?? [root]);
+            await prompt("Show index.html of folders");
+            await new Promise((resolve) => setTimeout(resolve, 300));
+            type(`${options.indexAnswer ?? ""}\r`);
+        }
         // a user name, followed by a password unless the name is refused, an empty name ends the questions
         let complaints = 0;
         let passwordsAsked = 0;
@@ -242,6 +249,7 @@ describe.skipIf(!hasScript)("client script", () => {
                 expect(run.output()).toMatch(/^Usage: run-\w+\.sh \[options\]/);
                 expect(run.output()).toContain("-p, --port PORT");
                 expect(run.output()).toContain("-a, --auth USER:PASSWORD");
+                expect(run.output()).toContain("-l, --list");
                 expect(run.output()).toContain("Opens a tunnel from 127.0.0.1 to this computer.");
             }
             await expect(readFile(path.join(workDir(user), "known_hosts"))).rejects.toThrow();
@@ -305,6 +313,15 @@ describe.skipIf(!hasScript)("client script", () => {
             await waitFor(() => run.output().includes("Press Ctrl+C to stop."), 30000, `the tunnel, output:\n${run.output()}`);
             expect(user.publicAuth).toEqual({ account: "alice", password: secret });
             expect(await pgrep(secret)).toEqual([]);
+            process.kill(run.child.pid!, "SIGTERM");
+            await expectStopped(user, run.child.pid!);
+        });
+
+        it("shows the file list instead of index.html with --list", async () => {
+            const user = await store.create();
+            const run = runWithoutTerminal(await writeScript(user), ["-d", "~", "-y", "--list"]);
+            await waitFor(() => run.output().includes("Press Ctrl+C to stop."), 30000, `the tunnel, output:\n${run.output()}`);
+            expect(user.serveIndex).toBe(false);
             process.kill(run.child.pid!, "SIGTERM");
             await expectStopped(user, run.child.pid!);
         });
@@ -382,6 +399,7 @@ describe.skipIf(!hasScript)("client script", () => {
             expect(run.output()).toContain(`${path.join(root, "missing")} is not a directory.`);
             // ~ is expanded to the home directory
             expect(user.staticDirectory).toBe(home);
+            expect(user.serveIndex).toBe(true);
             run.type("\x03");
             await expectStopped(user, run.scriptPid);
         });
@@ -397,6 +415,14 @@ describe.skipIf(!hasScript)("client script", () => {
             expect(run.output()).not.toContain("pa ss:word");
             expect(run.output()).toContain("Visitors are asked for the user name alice");
             expect(user.publicAuth).toEqual({ account: "alice", password: "pa ss:word" });
+            run.type("\x03");
+            await expectStopped(user, run.scriptPid);
+        });
+
+        it("shows the file list when index.html is turned down", async () => {
+            const user = await store.create();
+            const run = await start(user, await writeScript(user), { folder: true, indexAnswer: "n" });
+            expect(user.serveIndex).toBe(false);
             run.type("\x03");
             await expectStopped(user, run.scriptPid);
         });

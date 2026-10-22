@@ -56,6 +56,10 @@ and password. With `--port` or `--dir` use `--auth user:password` instead, or `G
 to keep the password out of `ps`.
 The `Authorization` header is still passed on to your app.
 
+When sharing a folder, a folder with an `index.html` shows it instead of the file list. Use `--list`, or answer
+no when asked, to always show the list. Files are sent with `ETag` and `Last-Modified`, so browsers that
+already have a file get a `304` instead of reading it again through the tunnel.
+
 The SOCKS5 tunnel has a password of its own, printed when the script connects. SOCKS5 sends it unencrypted,
 so it only opens the tunnel, never the inspector or the script download. Users created before this had
 the account password for SOCKS5, they get a new one on the next start of the gateway.

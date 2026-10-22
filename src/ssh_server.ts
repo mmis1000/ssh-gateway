@@ -48,12 +48,16 @@ function killConnection(client: Connection) {
  * 4: quiet while the tunnel is fine, reports only when the connection is lost and back
  * 5: --port/--dir/--yes/--help options, files in ~/.ssh-gateway/<host>/<id>, works without
  *    netstat and with spaces in paths, refuses to run twice
- * 6: --auth asks visitors for a user name and password, a separate SOCKS5 password
+ * 6: --auth asks visitors for a user name and password, a separate SOCKS5 password,
+ *    --list shows the file list of folders that have an index.html
  */
 export const CLIENT_SCRIPT_VERSION = 6
 const VERSION_HEADER = /^v(\d+):$/
-/** last register argument, the client then sends user:pass as the first line on stdin */
+/** register flag, the client then sends user:pass as the first line on stdin */
 const AUTH_FLAG = '--auth'
+/** register flag, folders always show the file list, also when they have an index.html */
+const LIST_FLAG = '--list'
+const REGISTER_FLAGS = [AUTH_FLAG, LIST_FLAG]
 const PUBLIC_AUTH = /^([^:\x00-\x1f\x7f]+):([^\x00-\x1f\x7f]+)$/
 const STDIN_LIMIT = 1024
 const STDIN_TIMEOUT = 10 * 1000
@@ -189,8 +193,9 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                     const scriptVersion = header ? Number(header[1]) : 0
                     if (header) temp.shift()
                     client.userData!.protocolVersion = scriptVersion >= 1 ? Protocol.V1 : Protocol.V0
-                    const wantsAuth = temp.length === 5 && temp[4] === AUTH_FLAG
-                    if (wantsAuth) temp.pop()
+                    // flags follow register, user, port and directory
+                    const flags = temp.length > 4 ? temp.splice(4) : []
+                    const wantsAuth = flags.includes(AUTH_FLAG)
 
                     const fail = (message: string) => {
                         console.log(`${client.userData!.id}: [SSH] ${message}: ${inspect(info.command)}`);
@@ -202,6 +207,7 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                     const register = (publicAuth: PublicAuth | null) => {
                         client.userData!.remoteUser = temp[1];
                         client.userData!.publicAuth = publicAuth;
+                        client.userData!.serveIndex = !flags.includes(LIST_FLAG);
                         client.userData!.httpPort = parseInt(temp[2], 10);
 
                         if (client.userData!.httpPort === 0) {
@@ -225,7 +231,8 @@ ${publicAuth ? `Visitors are asked for the user name ${publicAuth.account} and t
                         stream.end();
                     }
 
-                    if ((temp.length !== 3 && temp.length !== 4) || temp[0] !== 'register' || !temp[2].match(/^[1-9]\d*$|^0$/)) {
+                    const flagsValid = flags.every((flag, index) => REGISTER_FLAGS.includes(flag) && flags.indexOf(flag) === index)
+                    if ((temp.length !== 3 && temp.length !== 4) || temp[0] !== 'register' || !temp[2].match(/^[1-9]\d*$|^0$/) || !flagsValid) {
                         fail('bad register command')
                     } else if (wantsAuth) {
                         readLine(stream).then((line) => {

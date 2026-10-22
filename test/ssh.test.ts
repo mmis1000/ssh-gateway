@@ -181,8 +181,8 @@ class ClientSession {
     }
 
     /** auth is sent on stdin like run.sh --auth does */
-    register(port: number, staticDirectory?: string, auth?: string) {
-        const args = [`v${CLIENT_SCRIPT_VERSION}:`, "register", LOCAL_USER, String(port), staticDirectory ?? "null"];
+    register(port: number, staticDirectory?: string, auth?: string, flags: string[] = []) {
+        const args = [`v${CLIENT_SCRIPT_VERSION}:`, "register", LOCAL_USER, String(port), staticDirectory ?? "null", ...flags];
         if (auth !== undefined) args.push("--auth");
         return this.exec(args.map((arg) => `'${arg}'`).join(" "), auth === undefined ? undefined : `${auth}\n`);
     }
@@ -380,6 +380,18 @@ describe("ssh server", () => {
             expect(user.publicAuth).toBeNull();
         });
 
+        it("takes --list, also together with --auth, and clears it on the next register", async () => {
+            expect(user.serveIndex).toBe(true);
+            expect((await session.register(0, "/srv/www", undefined, ["--list"])).stdout).toContain("Client accepted.");
+            expect(user.serveIndex).toBe(false);
+            expect((await session.register(0, "/srv/www", "alice:secret", ["--list"])).stdout).toContain("Client accepted.");
+            expect(user.serveIndex).toBe(false);
+            expect(user.publicAuth).toEqual({ account: "alice", password: "secret" });
+            expect((await session.register(0, "/srv/www")).stdout).toContain("Client accepted.");
+            expect(user.serveIndex).toBe(true);
+            expect(user.publicAuth).toBeNull();
+        });
+
         it.each([
             ["no colon", "alice\n", "bad --auth value"],
             ["an empty user name", ":secret\n", "bad --auth value"],
@@ -399,6 +411,7 @@ describe("ssh server", () => {
             ["leading zero port", `v1: register ${LOCAL_USER} 080`],
             ["unknown command", `v1: unregister ${LOCAL_USER} 8080`],
             ["an unknown flag", `v6: register ${LOCAL_USER} 8080 null --verbose`],
+            ["a repeated flag", `v6: register ${LOCAL_USER} 0 /srv --list --list`],
         ])("rejects %s", async (_, command) => {
             const res = await session.exec(command);
             expect(res.stderr).toContain("bad register command");
@@ -900,13 +913,92 @@ describe("ssh server", () => {
             expect(res.headers.location).toBe("/sub%20dir/");
         });
 
-        it("lists directories", async () => {
+        it("lists directories without an index.html", async () => {
+            const res = await get("/sub%20dir/");
+            expect(res.status).toBe(200);
+            expect(res.headers["content-type"]).toMatch(/^text\/html/);
+            expect(res.body).toContain("nested%20file.txt");
+        });
+
+        it("serves the index.html of a directory instead of the list", async () => {
             const res = await get("/");
             expect(res.status).toBe(200);
             expect(res.headers["content-type"]).toMatch(/^text\/html/);
-            expect(res.body).toContain('href="/sub%20dir"');
-            expect(res.body).toContain('href="/digits.txt"');
-            expect(res.body).toContain('href="/link-inside"');
+            expect(res.body).toBe("<h1>hello</h1>");
+            expect(res.headers.etag).toBe((await get("/index.html")).headers.etag);
+        });
+
+        it("lists directories with an index.html after --list", async () => {
+            user.serveIndex = false;
+            try {
+                const res = await get("/");
+                expect(res.status).toBe(200);
+                expect(res.body).toContain('href="/sub%20dir"');
+                expect(res.body).toContain('href="/digits.txt"');
+                expect(res.body).toContain('href="/link-inside"');
+                expect(res.body).toContain('href="/index.html"');
+            } finally {
+                user.serveIndex = true;
+            }
+        });
+
+        it("does not follow a symlinked index.html", async () => {
+            const dir = path.join(www, "linked-index");
+            await mkdir(dir);
+            await symlink(path.join(root, "secret.txt"), path.join(dir, "index.html"));
+            const res = await get("/linked-index/");
+            expect(res.status).toBe(200);
+            expect(res.body).not.toContain("top secret");
+            expect(res.body).toContain("index.html");
+        });
+
+        describe("caching", () => {
+            it("sends validators that make browsers check back", async () => {
+                const res = await get("/digits.txt");
+                expect(res.headers.etag).toMatch(/^"[0-9a-f]+-a"$/);
+                expect(new Date(res.headers["last-modified"]!).getTime()).toBeGreaterThan(0);
+                expect(res.headers["cache-control"]).toBe("no-cache");
+            });
+
+            it("answers 304 to a matching If-None-Match or If-Modified-Since", async () => {
+                const first = await get("/digits.txt");
+                for (const headers of [{ "If-None-Match": first.headers.etag }, { "If-Modified-Since": first.headers["last-modified"] }]) {
+                    const res = await get("/digits.txt", headers);
+                    expect(res.status).toBe(304);
+                    expect(res.body).toBe("");
+                    expect(res.headers.etag).toBe(first.headers.etag);
+                }
+                expect((await get("/digits.txt", { "If-None-Match": '"other"' })).status).toBe(200);
+            });
+
+            it("changes the etag when the file changes", async () => {
+                const file = path.join(www, "changing.txt");
+                await writeFile(file, "one");
+                const before = await get("/changing.txt");
+                await writeFile(file, "three");
+                const after = await get("/changing.txt", { "If-None-Match": before.headers.etag });
+                expect(after.status).toBe(200);
+                expect(after.body).toBe("three");
+                expect(after.headers.etag).not.toBe(before.headers.etag);
+            });
+
+            it("only sends a range of the version the client has", async () => {
+                const { etag } = (await get("/digits.txt")).headers;
+                const same = await get("/digits.txt", { Range: "bytes=2-5", "If-Range": etag });
+                expect(same.status).toBe(206);
+                expect(same.body).toBe("2345");
+
+                const changed = await get("/digits.txt", { Range: "bytes=2-5", "If-Range": '"older"' });
+                expect(changed.status).toBe(200);
+                expect(changed.body).toBe("0123456789");
+            });
+
+            it("answers HEAD without reading the file", async () => {
+                const res = await request(gateway.httpPort, host(), "/digits.txt", { method: "HEAD" });
+                expect(res.status).toBe(200);
+                expect(res.headers["content-length"]).toBe("10");
+                expect(res.body).toBe("");
+            });
         });
 
         it("records static responses for the inspector", async () => {

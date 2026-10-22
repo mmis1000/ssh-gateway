@@ -9,6 +9,8 @@ and whether visitors need a password.
 
   -p, --port PORT   share the web server on local PORT
   -d, --dir DIR     share the directory DIR as a static site
+  -l, --list        with --dir, always show the file list of folders, also when they have
+                    an index.html, which is shown instead otherwise
   -a, --auth USER:PASSWORD
                     ask visitors for this user name and password. Other users of this
                     computer can see options in ps, set GATEWAY_AUTH=USER:PASSWORD instead
@@ -24,6 +26,7 @@ FORWARD_PORT=""
 STATIC_DIRECTORY=""
 PUBLIC_AUTH="${GATEWAY_AUTH:-}"
 ASKED_WHAT_TO_SHARE=0
+SHOW_LIST=0
 ASSUME_YES=0
 while [ $# -gt 0 ]
 do
@@ -36,6 +39,7 @@ do
         -d|--dir)
             [ $# -ge 2 ] || { echo "$1 needs a directory, see --help" >&2; exit 2; }
             STATIC_DIRECTORY="$2"; shift;;
+        -l|--list) SHOW_LIST=1;;
         -a|--auth)
             [ $# -ge 2 ] || { echo "$1 needs USER:PASSWORD, see --help" >&2; exit 2; }
             PUBLIC_AUTH="$2"; shift;;
@@ -359,6 +363,11 @@ else
         echo "$STATIC_DIRECTORY is not a directory."
     done
     STATIC_DIRECTORY="$RESOLVED"
+    if [ $SHOW_LIST == 0 ]
+    then
+        read -p "Show index.html of folders that have one, instead of the file list? [Y/n]: " ANSWER || exit 2
+        [[ "$ANSWER" =~ ^[nN] ]] && SHOW_LIST=1
+    fi
 fi
 
 # only asked together with what to share, runs with --port or --dir stay as they are
@@ -440,6 +449,7 @@ fi
 
 function register {
     local command="v6: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
+    [ $SHOW_LIST == 1 ] && command="$command --list"
     if [ -n "$PUBLIC_AUTH" ]
     then
         # on stdin, a command line would show the password in ps and in the gateway log

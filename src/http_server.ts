@@ -15,6 +15,7 @@ import { asSocket, decodePath, encodePath, formatOrigin, getContentType, parseBa
 import getFastReadStream from "./ssh_fast_read_stream";
 import httpProxy from 'http-proxy';
 import { RawData, WebSocketServer } from 'ws';
+import type { Stats } from "ssh2";
 import { AddressInfo } from "net";
 import { Duplex, pipeline } from "stream";
 import { WsManager } from "./ws_manager";
@@ -32,6 +33,11 @@ const getId = (name: string) => {
     idMap[name] = current
     idMap[name]++
     return current
+}
+
+/** like nginx: changes with the modification time or the size, whichever the edit touched */
+export function fileEtag(stats: Pick<Stats, 'mtime' | 'size'>) {
+    return `"${Math.floor(stats.mtime).toString(16)}-${stats.size.toString(16)}"`
 }
 
 /** run.sh for a user, from template/script.template */
@@ -349,7 +355,6 @@ Disallow: /
                 let remoteMountPoint = userData.staticDirectory;
                 let reqPath = decodePath(req.path);
                 let baseDir = path.dirname(reqPath);
-                let baseName = path.basename(reqPath)
                 let fullPath = path.resolve(remoteMountPoint!, reqPath.slice(1));
                 let realBaseDir = path.dirname(fullPath);
                 let realBaseName = path.basename(fullPath)
@@ -362,6 +367,91 @@ Disallow: /
                 userData.getSftp()
                 .then(function (sftpClient) {
                     userData.clearSuicideTimer()
+                    const sendFile = (filePath: string, stats: Stats) => {
+                        let size = stats.size;
+                        let contentType = getContentType(path.basename(filePath));
+                        let readStream: ReturnType<typeof getFastReadStream> | null = null;
+
+                        res.set('Content-Type', contentType);
+                        res.set('Content-Length', String(size));
+                        res.set('Accept-Ranges', 'bytes');
+
+                        // every read goes through the tunnel, let browsers check back cheaply instead.
+                        // no-cache: the shared files can change at any time, so always ask first
+                        const etag = fileEtag(stats)
+                        const lastModified = new Date(stats.mtime * 1000).toUTCString()
+                        res.set('ETag', etag);
+                        res.set('Last-Modified', lastModified);
+                        res.set('Cache-Control', 'no-cache');
+                        if (req.fresh) {
+                            res.removeHeader('Content-Length');
+                            return res.status(304).end();
+                        }
+
+                        // a range of a file that changed since would mix two versions, send all of it then
+                        const ifRange = req.headers['if-range']
+                        const rangeStillValid = !ifRange || ifRange === etag || ifRange === lastModified
+                        const range = rangeStillValid ? req.range(size) : undefined
+
+                        if (req.method === 'HEAD') {
+                            return res.end();
+                        }
+
+                        if (range == null) {
+                            // readStream = sftpClient.createReadStream(fullPath);
+                            readStream = getFastReadStream(sftpClient, filePath);
+                        } else if (range !== -1 && range !== -2 && range.type === 'bytes' && range.length === 1) {
+                            res.set('Content-Length', String(range[0].end - range[0].start + 1));
+
+                            res.set('Content-Range', `bytes ${range[0].start}-${range[0].end}/${stats.size}`)
+                            let temp: {
+                                start?: number,
+                                end?: number
+                            } = {};
+                            if (range[0].start !== 0) {
+                                temp.start = range[0].start;
+                            }
+
+                            if (range[0].end + 1 !== size) {
+                                temp.end = range[0].end;
+                            }
+
+                            //readStream = sftpClient.createReadStream(fullPath, temp);
+                            readStream = getFastReadStream(sftpClient, filePath, temp);
+                            res.status(206);
+                        } else {
+                            res.set('Content-Type', 'text/html');
+                            res.removeHeader('Content-Length');
+                            return res.status(416).end('range not satisfied');
+                        }
+
+                        readStream.on('error', function(err) {
+                            if (req.closed) {
+                                return;
+                            }
+                            if (res.headersSent) {
+                                res.end()
+                                return
+                            }
+                            res.set('Content-Type', 'text/plain');
+                            res.removeHeader('Content-Length');
+                            res.status(500).end(err.stack ? err.stack : err.toString());
+                        })
+                        
+                        req.on('close', function () {
+                            
+                            // req.closed = true;
+                            try {
+                                readStream?.destroy();
+                            } catch (err) {
+                                // nuzz
+                            }
+                        })
+                        
+                        readStream.pipe(res);
+                        return;
+                    }
+
                     console.log(`${userData.id}: [HTTP] stating stat of ${fullPath}`);
                     sftpClient.lstat(fullPath, function(err, stats) {
                         console.log(`${userData.id}: [HTTP] got stat of ${fullPath}`);
@@ -397,9 +487,9 @@ Disallow: /
                                 return res.redirect(302, req.path + '/');
                             }
 
-                            return sftpClient.readdir(fullPath, function(err, files) {
+                            const listDirectory = () => sftpClient.readdir(fullPath, function(err, files) {
                                 console.log(`${userData.id}: [HTTP] got dir res  ${fullPath}`);
-                                
+
                                 if (err) {
                                     return res.status(404).end(inspect(err));
                                 }
@@ -415,72 +505,22 @@ Disallow: /
                                     files
                                 })
                             })
+
+                            // a folder with an index.html is a site, show that instead of the listing.
+                            // a symlinked index.html is listed instead, following it could leave the folder
+                            if (!userData.serveIndex) {
+                                return listDirectory()
+                            }
+                            const indexPath = path.join(fullPath, 'index.html')
+                            return sftpClient.lstat(indexPath, function(err, indexStats) {
+                                if (!err && indexStats.isFile()) {
+                                    return sendFile(indexPath, indexStats)
+                                }
+                                listDirectory()
+                            })
                         } else if (stats.isFile()) {
                             console.log(`${userData.id}: [HTTP] is file  ${fullPath}`);
-                            
-                            let size = stats.size;
-                            let contentType = getContentType(baseName);
-                            // let range = req.headers.range ? parseRange(size, req.headers.range) : null;
-                            const range = req.range(stats.size)
-                            let readStream: ReturnType<typeof getFastReadStream> | null = null;
-
-                            res.set('Content-Type', contentType);
-                            res.set('Content-Length', String(size));
-                            res.set('Accept-Ranges', 'bytes');
-
-                            if (range == null) {
-                                // readStream = sftpClient.createReadStream(fullPath);
-                                readStream = getFastReadStream(sftpClient, fullPath);
-                            } else if (range !== -1 && range !== -2 && range.type === 'bytes' && range.length === 1) {
-                                res.set('Content-Length', String(range[0].end - range[0].start + 1));
-
-                                res.set('Content-Range', `bytes ${range[0].start}-${range[0].end}/${stats.size}`)
-                                let temp: {
-                                    start?: number,
-                                    end?: number
-                                } = {};
-                                if (range[0].start !== 0) {
-                                    temp.start = range[0].start;
-                                }
-
-                                if (range[0].end + 1 !== size) {
-                                    temp.end = range[0].end;
-                                }
-
-                                //readStream = sftpClient.createReadStream(fullPath, temp);
-                                readStream = getFastReadStream(sftpClient, fullPath, temp);
-                                res.status(206);
-                            } else {
-                                res.set('Content-Type', 'text/html');
-                                res.removeHeader('Content-Length');
-                                return res.status(416).end('range not satisfied');
-                            }
-
-                            readStream.on('error', function(err) {
-                                if (req.closed) {
-                                    return;
-                                }
-                                if (res.headersSent) {
-                                    res.end()
-                                    return
-                                }
-                                res.set('Content-Type', 'text/plain');
-                                res.removeHeader('Content-Length');
-                                res.status(500).end(err.stack ? err.stack : err.toString());
-                            })
-                            
-                            req.on('close', function () {
-                                
-                                // req.closed = true;
-                                try {
-                                    readStream?.destroy();
-                                } catch (err) {
-                                    // nuzz
-                                }
-                            })
-                            
-                            readStream.pipe(res);
-                            return;
+                            return sendFile(fullPath, stats)
                         } else {
                             return res.status(403).end('file type not implemented');
                         }

@@ -52,6 +52,8 @@ class User {
     protocolVersion: Protocol.V0 | Protocol.V1 = Protocol.V0
     /** set on every register, null when visitors need no password */
     publicAuth: PublicAuth | null = null
+    /** folders with an index.html serve it instead of the file list, off with run.sh --list */
+    serveIndex = true
     /** the ssh connection that holds the current tunnel, only it may tear the tunnel down */
     tunnelConnection: Connection | null = null
 
