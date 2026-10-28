@@ -18,6 +18,9 @@ and whether visitors need a password, or offers to use the answers from last tim
   -r, --last        share what the previous run shared, with the same settings, without
                     asking. --auth and GATEWAY_AUTH replace its password
   -y, --yes         accept the notice below without asking
+      --update      get the current version of this script from the gateway and save it
+                    next to this one, with .new added to the name, to compare and replace
+                    it yourself. Works while the tunnel is up, takes no other options
   -h, --help        show this help and exit
 
 Without a terminal (cron, services) --last, or --yes and one of --port or --dir, are required.
@@ -29,9 +32,10 @@ function valid_auth {
     [[ "$1" =~ ^[^:[:cntrl:]]+:[^[:cntrl:]]+$ ]]
 }
 
-# sets FORWARD_PORT, STATIC_DIRECTORY, PUBLIC_AUTH, SHOW_LIST, SHARE_DOTFILES, USE_LAST and
-# ASSUME_YES from the options, exits on a wrong one
+# sets FORWARD_PORT, STATIC_DIRECTORY, PUBLIC_AUTH, SHOW_LIST, SHARE_DOTFILES, USE_LAST,
+# ASSUME_YES and UPDATE from the options, exits on a wrong one
 function parse_options {
+    local option_count=$#
     FORWARD_PORT=""
     STATIC_DIRECTORY=""
     PUBLIC_AUTH="${GATEWAY_AUTH:-}"
@@ -39,6 +43,7 @@ function parse_options {
     SHARE_DOTFILES=0
     USE_LAST=0
     ASSUME_YES=0
+    UPDATE=0
     while [ $# -gt 0 ]
     do
         case "$1" in
@@ -53,6 +58,7 @@ function parse_options {
             -l|--list) SHOW_LIST=1;;
             --dotfiles) SHARE_DOTFILES=1;;
             -r|--last) USE_LAST=1;;
+            --update) UPDATE=1;;
             -a|--auth)
                 [ $# -ge 2 ] || { echo "$1 needs USER:PASSWORD, see --help" >&2; exit 2; }
                 PUBLIC_AUTH="$2"; shift;;
@@ -60,6 +66,13 @@ function parse_options {
         esac
         shift
     done
+    if [ $UPDATE == 1 ] && [ $option_count != 1 ]
+    then
+        echo "--update only gets the new version of this script, it takes no other options" >&2
+        exit 2
+    fi
+    # GATEWAY_AUTH may still be set, it does not matter for an update
+    [ $UPDATE == 1 ] && return
     if [ -n "$FORWARD_PORT" ] && [ -n "$STATIC_DIRECTORY" ]
     then
         echo "Use either --port or --dir, not both" >&2

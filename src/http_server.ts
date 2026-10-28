@@ -3,10 +3,9 @@ import { ClientPacket, Config, Packet } from "./interface";
 import http from "http";
 import express from "express";
 const inspect = require('util').inspect;
-import render, { readClientTemplate } from "./template";
+import { clientScripts } from "./template";
 import path from "path";
 import { UserStore } from "./store";
-import { User } from "./user";
 import { asSocket, decodePath, formatOrigin, getContentType, parseBasicAuth, parseRawData, secretEquals } from "./utils";
 import getFastReadStream from "./ssh_fast_read_stream";
 import httpProxy from 'http-proxy';
@@ -16,7 +15,6 @@ import { AddressInfo } from "net";
 import { Duplex, pipeline } from "stream";
 import { WsManager } from "./ws_manager";
 import { Inspector } from "./inspector";
-import { knownHostsLines } from "./keys";
 import { folderView, hasHiddenSegment } from "./listing";
 
 /** websocket close code for failed inspector login, the app does not retry on it */
@@ -92,20 +90,6 @@ export function sendVisitorError(req: express.Request, res: express.Response, ki
 /** like nginx: changes with the modification time or the size, whichever the edit touched */
 export function fileEtag(stats: Pick<Stats, 'mtime' | 'size'>) {
     return `"${Math.floor(stats.mtime).toString(16)}-${stats.size.toString(16)}"`
-}
-
-/** run.sh for a user, from the parts in template/client */
-export function renderClientScript(template: string, config: Pick<Config, 'sshHost' | 'sshPort' | 'userListenPortLow' | 'userListenPortHigh'>, user: User, knownHosts: string) {
-    return render(template, {
-        TARGET_PORT: config.sshPort,
-        TARGET_USER: user.id!,
-        TARGET_HOST: config.sshHost,
-        CLIENT_PRIVATE_KEY: user.clientKey!,
-        CLIENT_SERVER_KEY: user.gatewayKeyPub!,
-        LISTEN_PORT_LOW: config.userListenPortLow,
-        LISTEN_PORT_HIGH: config.userListenPortHigh,
-        KNOWN_HOSTS: knownHosts,
-    })
 }
 
 export async function createHttpServer(config: Config, store: UserStore) {
@@ -574,9 +558,7 @@ Disallow: /
         res.end(`This is a domain that serves user content.`)
     })
 
-    const templatePromise = readClientTemplate()
-    // read on each request, host keys are generated on the first start
-    const knownHostsPromise = () => knownHostsLines(store.hostKeyDir, config.sshHost, config.sshPort).then(lines => lines.join('\n'))
+    const clientScriptFor = clientScripts(config, store.hostKeyDir)
 
     router.post('/setup', function(req, res, next) {
         let domain = req.hostname;
@@ -606,13 +588,11 @@ Disallow: /
         }
 
         store.create()
-            .then(function(userData) {
-                return Promise.all([userData, templatePromise, knownHostsPromise()])
-            })
-            .then(function([userData, template, knownHosts]) {
+            .then(clientScriptFor)
+            .then(function(script) {
                 res.set('Content-Type', 'application/x-sh');
 
-                res.end(renderClientScript(template, config, userData, knownHosts))
+                res.end(script)
             })
             .catch(function(err) {
                 console.error(`[HTTP] setup failed: ${inspect(err)}`)
@@ -645,13 +625,11 @@ Disallow: /
             }
             return userData
         })
-        .then(function(userData) {
-            return Promise.all([userData, templatePromise, knownHostsPromise()])
-        })
-        .then(function([userData, template, knownHosts]) {
+        .then(clientScriptFor)
+        .then(function(script) {
             res.set('Content-Type', 'application/x-sh');
 
-            res.end(renderClientScript(template, config, userData, knownHosts))
+            res.end(script)
         })
         .catch((err) => {
             console.log(`${account}: [HTTP] denied update due to ${err}`);

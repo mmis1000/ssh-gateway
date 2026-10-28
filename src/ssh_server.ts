@@ -9,6 +9,7 @@ import ssh2, { Connection, ServerChannel } from 'ssh2';
 import { Protocol, PublicAuth, User } from "./user"
 import { UserStore } from "./store"
 import { formatOrigin } from "./utils"
+import { clientScripts } from "./template"
 import { AddressInfo } from "net";
 const utils = ssh2.utils;
 
@@ -52,8 +53,11 @@ function killConnection(client: Connection) {
  *    --list shows the file list of folders that have an index.html
  * 7: in folder mode, says the tunnel is up only after "check" found the folder readable
  * 8: --dotfiles shares names starting with a dot, which are hidden and refused otherwise
+ * 9: --update gets the new version with the "update" command and saves it next to the script
  */
-export const CLIENT_SCRIPT_VERSION = 8
+export const CLIENT_SCRIPT_VERSION = 9
+/** the first version that knows --update, older ones are told the curl command of /update */
+const UPDATE_OVER_SSH = 9
 const VERSION_HEADER = /^v(\d+):$/
 /** exit code of a failed check, ssh itself exits with 255 when the connection fails */
 export const CHECK_FAILED = 3
@@ -93,6 +97,7 @@ function readLine(stream: ServerChannel) {
 }
 
 export function createSshServer(config: Config, store: UserStore, hostKeys: Buffer[], options: SshServerOptions = {}) {
+    const clientScriptFor = clientScripts(config, store.hostKeyDir)
     return new ssh2.Server({
         hostKeys,
         keepaliveInterval: options.keepaliveInterval,
@@ -199,7 +204,6 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                     const header = VERSION_HEADER.exec(temp[0] ?? '')
                     const scriptVersion = header ? Number(header[1]) : 0
                     if (header) temp.shift()
-                    client.userData!.protocolVersion = scriptVersion >= 1 ? Protocol.V1 : Protocol.V0
                     // flags follow register, user, port and directory
                     const flags = temp.length > 4 ? temp.splice(4) : []
                     const wantsAuth = flags.includes(AUTH_FLAG)
@@ -212,6 +216,8 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                     }
 
                     const register = (publicAuth: PublicAuth | null) => {
+                        // only here, "check" and "update" may come from another terminal while a tunnel is up
+                        client.userData!.protocolVersion = scriptVersion >= 1 ? Protocol.V1 : Protocol.V0
                         client.userData!.remoteUser = temp[1];
                         client.userData!.publicAuth = publicAuth;
                         client.userData!.serveIndex = !flags.includes(LIST_FLAG);
@@ -224,15 +230,19 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                         }
 
                         const userData = client.userData!
+                        const updatesOverSsh = scriptVersion >= UPDATE_OVER_SSH
                         const updateNotice = scriptVersion < CLIENT_SCRIPT_VERSION
                             ? `Please update this script, a newer version with fixes is available:
-  curl -u '${userData.id}:${userData.password}' ${formatOrigin(config.setupProtocol, config.setupHost, config.setupPort)}/update > run.sh
+  ${updatesOverSsh ? 'run it with --update' : `curl -u '${userData.id}:${userData.password}' ${formatOrigin(config.setupProtocol, config.setupHost, config.setupPort)}/update > run.sh`}
 `
                             : ''
+                        const updateHint = updatesOverSsh
+                            ? 'To get a new version of this script later, run it with --update'
+                            : `To get new version of current script, fetch it from ${config.setupProtocol}://${client.userData!.id}:${client.userData!.password}@${config.setupHost}:${config.setupPort}/update`
                         stream.write(`${updateNotice}Client accepted.
 Forward server is opened at ${config.httpProtocol}://${client.userData!.domainName}.${config.httpHost}:${config.httpPort}/
 Socks v5 tunnel is opened at socks5://${client.userData!.id}:${client.userData!.socksPassword}@${config.socksHost}:${config.socksPort}
-To get new version of current script, fetch it from ${config.setupProtocol}://${client.userData!.id}:${client.userData!.password}@${config.setupHost}:${config.setupPort}/update
+${updateHint}
 Inspect requests at ${config.setupProtocol}://${config.setupHost}:${config.setupPort}/app/#${client.userData!.id}:${client.userData!.password}
 ${publicAuth ? `Visitors are asked for the user name ${publicAuth.account} and the password given with --auth.\n` : ''}`);
                         stream.exit(0);
@@ -270,8 +280,26 @@ ${publicAuth ? `Visitors are asked for the user name ${publicAuth.account} and t
                         }, (err: Error) => done(`the gateway could not log in to the sshd of this script: ${err.message}`))
                     }
 
+                    // "update": the current script of this user on stdout, the script saves it next to itself
+                    const update = () => {
+                        const userData = client.userData!
+                        clientScriptFor(userData).then((script) => {
+                            console.log(`${userData.id}: [SSH] sent the current script`);
+                            stream.write(script);
+                            stream.exit(0);
+                            stream.end();
+                        }, (err: unknown) => {
+                            console.error(`${userData.id}: [SSH] update failed: ${inspect(err)}`);
+                            stream.stderr.write('the gateway could not make the script, its log has the details\n');
+                            stream.exit(1);
+                            stream.end();
+                        })
+                    }
+
                     if (temp.length === 1 && temp[0] === 'check') {
                         check()
+                    } else if (temp.length === 1 && temp[0] === 'update') {
+                        update()
                     } else if ((temp.length !== 3 && temp.length !== 4) || temp[0] !== 'register' || !temp[2].match(/^[1-9]\d*$|^0$/) || !flagsValid) {
                         fail('bad register command')
                     } else if (wantsAuth) {

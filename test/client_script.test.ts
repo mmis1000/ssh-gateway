@@ -1,16 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { ChildProcess, execFile, execFileSync, spawn } from "child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "fs/promises";
 import os from "os";
 import { statSync } from "fs";
 import net from "net";
 import path from "path";
-import { renderClientScript } from "../src/http_server";
-import { readClientTemplate } from "../src/template";
+import { clientScripts, readClientTemplate, renderClientScript } from "../src/template";
 import { knownHostsLines, loadHostKeys } from "../src/keys";
 import { createSshServer } from "../src/ssh_server";
 import { UserStore } from "../src/store";
 import { User } from "../src/user";
+import { Config } from "../src/interface";
 import { createConfig, openTestStore } from "./helpers";
 
 // Runs the real run.sh in a pseudo terminal (util-linux `script`), types the answers like a
@@ -44,6 +44,8 @@ describe.skipIf(!hasScript)("client script", () => {
     let cleanup: () => Promise<void>;
     let store: UserStore;
     let sshServer: ReturnType<typeof createSshServer>;
+    /** what the gateway hands out with --update, sshPort is set once it listens */
+    let config: Config;
     let sshPort: number;
     let target: net.Server;
     let targetPort: number;
@@ -60,8 +62,10 @@ describe.skipIf(!hasScript)("client script", () => {
         const saveDir = path.join(root, "save");
         store = await openTestStore(saveDir);
         const hostKeys = await loadHostKeys(store.hostKeyDir, () => {});
-        sshServer = createSshServer(createConfig(saveDir), store, hostKeys);
+        config = createConfig(saveDir, { sshHost: "127.0.0.1" });
+        sshServer = createSshServer(config, store, hostKeys);
         sshPort = await new Promise((resolve) => sshServer.listen(0, "127.0.0.1", () => resolve((sshServer.address() as net.AddressInfo).port)));
+        config.sshPort = sshPort;
         // something to forward, the gateway never connects to it in these tests
         target = net.createServer((socket) => socket.end());
         targetPort = await new Promise((resolve) => target.listen(0, "127.0.0.1", () => resolve((target.address() as net.AddressInfo).port)));
@@ -86,13 +90,13 @@ describe.skipIf(!hasScript)("client script", () => {
     const masters = (user: User, ofHome = home) => pgrep(`ssh -N -M .*${path.join(ofHome, ".ssh-gateway", `${user.id}.sock`)}`);
     const sshds = (user: User) => pgrep(`sshd -D -f ${workDir(user)}/sshd_config`);
 
-    async function writeScript(user: User, options: { portRange?: [number, number] } = {}) {
+    async function writeScript(user: User, options: { portRange?: [number, number]; sshPort?: number } = {}) {
         const template = await readClientTemplate();
         const knownHosts = (await knownHostsLines(store.hostKeyDir, "127.0.0.1", sshPort)).join("\n");
         const file = scriptFileOf(user);
         await writeFile(file, renderClientScript(template, {
             sshHost: "127.0.0.1",
-            sshPort,
+            sshPort: options.sshPort ?? sshPort,
             userListenPortLow: options.portRange?.[0] ?? 30020,
             userListenPortHigh: options.portRange?.[1] ?? 30099,
         }, user, knownHosts));
@@ -203,6 +207,11 @@ describe.skipIf(!hasScript)("client script", () => {
             child.on("exit", (code) => resolve(code));
         });
         return { child, output: () => output, exited };
+    }
+
+    /** left over downloads of --update */
+    async function scriptDownloads(scriptFile: string) {
+        return (await readdir(path.dirname(scriptFile))).filter((name) => name.startsWith(path.basename(scriptFile)) && name.endsWith(".download"));
     }
 
     async function expectStopped(user: User, scriptPid: number) {
@@ -693,6 +702,86 @@ describe.skipIf(!hasScript)("client script", () => {
             second.type("\x03");
             await expectStopped(user, second.scriptPid);
             expect(await sshds(user)).toEqual([]);
+        });
+    });
+
+    describe.concurrent("update", { timeout: 60000 }, () => {
+        /** the script as the gateway hands it out now */
+        const current = (user: User) => clientScripts(config, store.hostKeyDir)(user);
+
+        it("saves a newer version next to the script and says how to compare and replace it", async () => {
+            const user = await store.create();
+            const scriptFile = await writeScript(user);
+            // an older version of the script
+            await writeFile(scriptFile, (await readFile(scriptFile, "utf8")).replace(/^SCRIPT_VERSION=\d+$/m, "SCRIPT_VERSION=8"));
+            await chmod(scriptFile, 0o755);
+            const run = runWithoutTerminal(scriptFile, ["--update"]);
+            expect(await run.exited).toBe(0);
+            expect(run.output()).toContain(`Saved the new version to ${scriptFile}.new.`);
+            expect(run.output()).toContain(`  diff ${scriptFile} ${scriptFile}.new\n`);
+            expect(run.output()).toContain(`  mv ${scriptFile}.new ${scriptFile}\n`);
+            expect(await readFile(`${scriptFile}.new`, "utf8")).toBe(await current(user));
+            // only the user can read the key in it, and it stays runnable like the old one
+            expect((await stat(`${scriptFile}.new`)).mode & 0o777).toBe(0o700);
+            expect(await readFile(scriptFile, "utf8")).toContain("SCRIPT_VERSION=8");
+            expect(await scriptDownloads(scriptFile)).toEqual([]);
+        });
+
+        it("saves nothing when the script is the current version", async () => {
+            const user = await store.create();
+            const scriptFile = await writeScript(user);
+            expect(await readFile(scriptFile, "utf8")).toBe(await current(user));
+            const run = runWithoutTerminal(scriptFile, ["--update"]);
+            expect(await run.exited).toBe(0);
+            expect(run.output()).toContain("This script is already the current version.");
+            await expect(stat(`${scriptFile}.new`)).rejects.toThrow();
+            expect(await scriptDownloads(scriptFile)).toEqual([]);
+        });
+
+        it("works while the tunnel is up and leaves it alone", async () => {
+            const user = await store.create();
+            const scriptFile = await writeScript(user);
+            const tunnel = await start(user, scriptFile);
+            const [master] = await masters(user);
+            const connection = user.tunnelConnection;
+            const before = tunnel.output();
+
+            await writeFile(`${scriptFile}.copy`, (await readFile(scriptFile, "utf8")).replace(/^SCRIPT_VERSION=\d+$/m, "SCRIPT_VERSION=8"));
+            const run = runWithoutTerminal(`${scriptFile}.copy`, ["--update"]);
+            expect(await run.exited).toBe(0);
+            expect(run.output()).toContain("Saved the new version");
+            expect(run.output()).not.toContain("already running");
+
+            await new Promise((resolve) => setTimeout(resolve, 2000));
+            expect(await masters(user)).toEqual([master]);
+            expect(user.tunnelConnection).toBe(connection);
+            expect(tunnel.output()).toBe(before);
+            tunnel.type("\x03");
+            await expectStopped(user, tunnel.scriptPid);
+        });
+
+        it("saves nothing when the gateway can not be reached", async () => {
+            const user = await store.create();
+            const closed = net.createServer();
+            const port = await new Promise<number>((resolve) => closed.listen(0, "127.0.0.1", () => resolve((closed.address() as net.AddressInfo).port)));
+            await new Promise((resolve) => closed.close(resolve));
+            const scriptFile = await writeScript(user, { sshPort: port });
+            const run = runWithoutTerminal(scriptFile, ["--update"]);
+            expect(await run.exited).toBe(1);
+            expect(run.output()).toContain("Could not get the new version from 127.0.0.1, nothing was saved.");
+            await expect(stat(`${scriptFile}.new`)).rejects.toThrow();
+            expect(await scriptDownloads(scriptFile)).toEqual([]);
+            expect(await masters(user)).toEqual([]);
+        });
+
+        it.each([
+            [["--update", "--port", "80"]],
+            [["--last", "--update"]],
+        ])("takes no other options: %j", async (args) => {
+            const user = await store.create();
+            const run = runWithoutTerminal(await writeScript(user), args);
+            expect(await run.exited).toBe(2);
+            expect(run.output()).toContain("--update only gets the new version of this script, it takes no other options");
         });
     });
 });

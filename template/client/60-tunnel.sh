@@ -1,5 +1,8 @@
+# sent before every command, CLIENT_SCRIPT_VERSION of the gateway is the version it hands out
+SCRIPT_VERSION=9
+
 function register {
-    local command="v8: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
+    local command="v$SCRIPT_VERSION: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
     [ $SHOW_LIST == 1 ] && command="$command --list"
     [ $SHARE_DOTFILES == 1 ] && command="$command --dotfiles"
     if [ -n "$PUBLIC_AUTH" ]
@@ -20,7 +23,7 @@ function check_folder {
     CHECK_FAILURE=""
     [ "$FORWARD_PORT" != 0 ] && return 0
     local output status
-    output="$(ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v8: check" < /dev/null 2>&1)"
+    output="$(ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v$SCRIPT_VERSION: check" < /dev/null 2>&1)"
     status=$?
     # 3 is the gateway's answer, anything else is ssh failing to ask
     [ $status == 3 ] && CHECK_FAILURE="$output"

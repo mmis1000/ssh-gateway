@@ -2,6 +2,12 @@ function main {
     parse_options "$@"
     detect_system
     prepare_workdir
+    if [ $UPDATE == 1 ]
+    then
+        update_script
+        exit
+    fi
+
     take_lock
     trim_logs
     write_known_hosts
@@ -21,7 +27,8 @@ function main {
     save_answers
 
     cd "$WORKDIR" || exit 1
-    write_keys
+    write_client_key
+    write_sshd_files
     if [ "$FORWARD_PORT" == 0 ]
     then
         start_sshd || exit 1

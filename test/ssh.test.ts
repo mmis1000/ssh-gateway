@@ -11,11 +11,11 @@ import WebSocket, { WebSocketServer } from "ws";
 import { createHttpServer } from "../src/http_server";
 import { CLIENT_SCRIPT_VERSION, createSshServer, SshServerOptions } from "../src/ssh_server";
 import { createSocksServer } from "../src/socks5_server";
-import { User } from "../src/user";
+import { Protocol, User } from "../src/user";
 import { knownHostsLines, loadHostKeys } from "../src/keys";
 import { openStore } from "../src/migrate";
 import { UserStore } from "../src/store";
-import { clientSshdConfig, close, createConfig, createTempDir, HTTP_HOST, isEntry, listen, openInspector, request, socks5Connect, V1User, writeV1Fixture } from "./helpers";
+import { clientSshdConfig, close, createConfig, createTempDir, HTTP_HOST, SETUP_HOST, isEntry, listen, openInspector, request, socks5Connect, V1User, writeV1Fixture } from "./helpers";
 
 // Drives the gateway with the real OpenSSH client the same way run.sh (template/client) does:
 // a ControlMaster connection, a "v1: register" exec and a "-O forward -R 22:localhost:<port>" reverse tunnel.
@@ -328,6 +328,38 @@ describe("ssh server", () => {
         });
     });
 
+    describe("update command", () => {
+        let user: User;
+        let session: ClientSession;
+
+        beforeAll(async () => {
+            user = await gateway.store.create();
+            session = await ClientSession.create(gateway, user);
+        });
+
+        it("sends the same script as the /update page", async () => {
+            const res = await session.exec(`'v${CLIENT_SCRIPT_VERSION}:' update`);
+            expect(res.code).toBe(0);
+            expect(res.stderr).toBe("");
+            const page = await request(gateway.httpPort, SETUP_HOST, "/update", {
+                headers: { Authorization: `Basic ${Buffer.from(`${user.id}:${user.password}`).toString("base64")}` },
+            });
+            expect(page.status).toBe(200);
+            expect(res.stdout).toBe(page.body);
+            expect(res.stdout).toContain(`export TARGET_USER="${user.id}"`);
+        });
+
+        it("leaves the protocol of a registered tunnel alone", async () => {
+            await session.exec(`register ${LOCAL_USER} 8080`);
+            expect(user.protocolVersion).toBe(Protocol.V0);
+            await session.exec(`'v${CLIENT_SCRIPT_VERSION}:' update`);
+            await session.exec(`'v${CLIENT_SCRIPT_VERSION}:' check`);
+            expect(user.protocolVersion).toBe(Protocol.V0);
+            await session.register(8080);
+            expect(user.protocolVersion).toBe(Protocol.V1);
+        });
+    });
+
     describe("register command", () => {
         let user: User;
         let session: ClientSession;
@@ -357,11 +389,19 @@ describe("ssh server", () => {
             ["v5", `v5: register ${LOCAL_USER} 8080 null`],
             ["v6", `v6: register ${LOCAL_USER} 8080 null`],
             ["v7", `v7: register ${LOCAL_USER} 8080 null`],
+            ["v8", `v8: register ${LOCAL_USER} 8080 null`],
         ])("asks %s scripts to update and still accepts them", async (_, command) => {
             const res = await session.exec(command);
             expect(res.stdout).toMatch(/^Please update this script, a newer version with fixes is available:\n/);
             expect(res.stdout).toContain(`curl -u '${user.id}:${user.password}' http://gateway.test/update > run.sh`);
             expect(res.stdout).toContain("Client accepted.");
+        });
+
+        it("tells current scripts to update with --update, not with the password", async () => {
+            const res = await session.register(8080);
+            expect(res.stdout).toContain("To get a new version of this script later, run it with --update\n");
+            expect(res.stdout).not.toContain("/update");
+            expect(res.stdout).not.toContain("curl");
         });
 
         it("normalizes the static directory", async () => {

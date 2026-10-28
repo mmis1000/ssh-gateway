@@ -13,6 +13,7 @@
 #   40-cleanup.sh      closing the tunnel on exit, also when this script is killed
 #   50-prompts.sh      the questions, and the answers saved for the next run
 #   60-tunnel.sh       connecting to the gateway and staying connected
+#   70-update.sh       --update, getting the current version of this script
 #   90-main.sh         main
 
 # the local sshd listens on a random port in this range

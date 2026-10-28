@@ -66,13 +66,17 @@ PermitUserRC no
 " > "$WORKDIR/sshd_config"
 }
 
-# the key for the gateway, and the key, config and host keys of the local sshd
-function write_keys {
+# the key this script logs in to the gateway with
+function write_client_key {
     echo "$CLIENT_PRIVATE_KEY" > "$WORKDIR/id_rsa"
+    chmod 600 "$WORKDIR/id_rsa"
+}
+
+# the key the gateway logs in to the local sshd with, its config and its host keys
+function write_sshd_files {
     echo "$CLIENT_SERVER_KEY" > "$WORKDIR/authorized_keys"
     write_sshd_config
 
-    chmod 600 "$WORKDIR/id_rsa"
     chmod 600 "$WORKDIR/authorized_keys"
 
     if [ ! -f "$WORKDIR/ssh_host_rsa_key" ]

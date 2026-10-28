@@ -1,8 +1,8 @@
 import { spawnSync } from "child_process";
 import { readdir } from "fs/promises";
 import { describe, expect, it } from "vitest";
-import { renderClientScript } from "../src/http_server";
-import { CLIENT_TEMPLATE_DIR, readClientTemplate } from "../src/template";
+import { CLIENT_TEMPLATE_DIR, readClientTemplate, renderClientScript } from "../src/template";
+import { CLIENT_SCRIPT_VERSION } from "../src/ssh_server";
 import { User } from "../src/user";
 
 describe("client script template", () => {
@@ -39,6 +39,10 @@ describe("client script template", () => {
         const names = (await readdir(CLIENT_TEMPLATE_DIR)).filter(name => name.endsWith(".sh")).sort();
         const listed = [...(await readClientTemplate()).matchAll(/^#   (\S+\.sh) /gm)].map(match => match[1]);
         expect(listed).toEqual(names);
+    });
+
+    it("sends the version the gateway hands out", async () => {
+        expect(await rendered()).toContain(`\nSCRIPT_VERSION=${CLIENT_SCRIPT_VERSION}\n`);
     });
 
     it("runs main as the last line", async () => {

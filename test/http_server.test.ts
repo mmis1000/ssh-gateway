@@ -4,6 +4,7 @@ import { existsSync } from "fs";
 import { readdir, readFile } from "fs/promises";
 import path from "path";
 import type { Express } from "express";
+import { CLIENT_SCRIPT_VERSION } from "../src/ssh_server";
 import { createHttpServer } from "../src/http_server";
 import { folderView } from "../src/listing";
 import { loadHostKeys } from "../src/keys";
@@ -107,8 +108,10 @@ describe("http server", () => {
             expect(setup.body).toContain('-a -x -o "IdentitiesOnly yes"');
             expect(setup.body).toContain('-o "StrictHostKeyChecking yes"');
             expect(setup.body).not.toContain("StrictHostKeyChecking no");
-            expect(setup.body).toContain('"v8: register');
-            expect(setup.body).toContain('"v8: check"');
+            expect(setup.body).toContain(`\nSCRIPT_VERSION=${CLIENT_SCRIPT_VERSION}\n`);
+            expect(setup.body).toContain('"v$SCRIPT_VERSION: register');
+            expect(setup.body).toContain('"v$SCRIPT_VERSION: check"');
+            expect(setup.body).toContain('"v$SCRIPT_VERSION: update"');
             expect(setup.body).toContain("ForceCommand internal-sftp -R");
             expect(setup.body).toContain("PermitOpen localhost:* 127.0.0.1:*");
 
