@@ -17,7 +17,7 @@ import { openStore } from "../src/migrate";
 import { UserStore } from "../src/store";
 import { clientSshdConfig, close, createConfig, createTempDir, HTTP_HOST, isEntry, listen, openInspector, request, socks5Connect, V1User, writeV1Fixture } from "./helpers";
 
-// Drives the gateway with the real OpenSSH client the same way template/script.template does:
+// Drives the gateway with the real OpenSSH client the same way run.sh (template/client) does:
 // a ControlMaster connection, a "v1: register" exec and a "-O forward -R 22:localhost:<port>" reverse tunnel.
 
 const SSHD_PATH = "/usr/sbin/sshd";

@@ -38,7 +38,7 @@ function killConnection(client: Connection) {
 }
 
 /**
- * Version of template/script.template, sent as "v<n>:" before the register command.
+ * Version of run.sh (template/client), sent as "v<n>:" before the register command.
  * Older scripts keep working but are asked to update.
  * 1: protocol v1, the gateway connects through the reverse forward directly
  * 2: hardened client sshd (sftp read only, local ports only), pinned host keys,

@@ -6,6 +6,7 @@ import { statSync } from "fs";
 import net from "net";
 import path from "path";
 import { renderClientScript } from "../src/http_server";
+import { readClientTemplate } from "../src/template";
 import { knownHostsLines, loadHostKeys } from "../src/keys";
 import { createSshServer } from "../src/ssh_server";
 import { UserStore } from "../src/store";
@@ -86,7 +87,7 @@ describe.skipIf(!hasScript)("client script", () => {
     const sshds = (user: User) => pgrep(`sshd -D -f ${workDir(user)}/sshd_config`);
 
     async function writeScript(user: User, options: { portRange?: [number, number] } = {}) {
-        const template = await readFile(path.resolve(__dirname, "../template/script.template"), "utf8");
+        const template = await readClientTemplate();
         const knownHosts = (await knownHostsLines(store.hostKeyDir, "127.0.0.1", sshPort)).join("\n");
         const file = scriptFileOf(user);
         await writeFile(file, renderClientScript(template, {

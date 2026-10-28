@@ -3,8 +3,7 @@ import { ClientPacket, Config, Packet } from "./interface";
 import http from "http";
 import express from "express";
 const inspect = require('util').inspect;
-import render from "./template";
-import { promises as fs } from "fs";
+import render, { readClientTemplate } from "./template";
 import path from "path";
 import { UserStore } from "./store";
 import { User } from "./user";
@@ -95,7 +94,7 @@ export function fileEtag(stats: Pick<Stats, 'mtime' | 'size'>) {
     return `"${Math.floor(stats.mtime).toString(16)}-${stats.size.toString(16)}"`
 }
 
-/** run.sh for a user, from template/script.template */
+/** run.sh for a user, from the parts in template/client */
 export function renderClientScript(template: string, config: Pick<Config, 'sshHost' | 'sshPort' | 'userListenPortLow' | 'userListenPortHigh'>, user: User, knownHosts: string) {
     return render(template, {
         TARGET_PORT: config.sshPort,
@@ -575,7 +574,7 @@ Disallow: /
         res.end(`This is a domain that serves user content.`)
     })
 
-    const templatePromise = fs.readFile(path.join(__dirname, '../template/script.template'), 'utf8')
+    const templatePromise = readClientTemplate()
     // read on each request, host keys are generated on the first start
     const knownHostsPromise = () => knownHostsLines(store.hostKeyDir, config.sshHost, config.sshPort).then(lines => lines.join('\n'))
 

@@ -6,6 +6,7 @@ import net, { AddressInfo } from "net";
 import WebSocket from "ws";
 import { utils } from "ssh2";
 import { openStore } from "../src/migrate";
+import { CLIENT_TEMPLATE_DIR } from "../src/template";
 import { ClientPacket, Config, InspectorEntry, Packet } from "../src/interface";
 
 export const SETUP_HOST = "gateway.test";
@@ -243,8 +244,8 @@ export function openTestStore(saveDir: string) {
  * the config users get. StrictModes is relaxed because tests live in the system temp dir.
  */
 export async function clientSshdConfig(vars: { LISTEN_PORT: number; WORKDIR: string; CURRENT_USER: string }) {
-    const template = await readFile(path.resolve(__dirname, "../template/script.template"), "utf8");
-    const match = /export SSHD_CONFIG_TEMPLETE="\n([\s\S]*?)\n"/.exec(template);
+    const template = await readFile(path.join(CLIENT_TEMPLATE_DIR, "30-sshd.sh"), "utf8");
+    const match = /echo "\n([\s\S]*?)\n" > "\$WORKDIR\/sshd_config"/.exec(template);
     if (!match) throw new Error("sshd config not found in template");
     const values: Record<string, string> = { WORKDIR: vars.WORKDIR, CURRENT_USER: vars.CURRENT_USER };
     const config = match[1]
