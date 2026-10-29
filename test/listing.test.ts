@@ -31,6 +31,14 @@ describe("folderView", () => {
         expect(entries.map((e) => e.href)).toEqual(["/a%20b/sub%20dir/", "/a%20b/link", "/a%20b/x%231.txt"]);
     });
 
+    it("links files, and only files, to the viewer", () => {
+        const files = [entry("a b#1.txt", FILE), entry("dir", DIR), entry("link", LINK)];
+        const viewer = "https://gateway.example/app/view/#https://site.ugc.example";
+        const links = folderView("/sub/", files, { siteName: "site", showHidden: false, viewer }).entries.map((e) => [e.name, e.viewHref]);
+        expect(links).toEqual([["dir", null], ["a b#1.txt", `${viewer}/sub/a%20b%231.txt`], ["link", null]]);
+        expect(view("/", files).entries.every((e) => e.viewHref === null)).toBe(true);
+    });
+
     it("picks an icon by type", () => {
         const icons = Object.fromEntries(view("/", [
             entry("photo.JPG", FILE), entry("clip.mp4", FILE), entry("song.mp3", FILE), entry("backup.tar.gz", FILE),

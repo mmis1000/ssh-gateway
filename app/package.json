@@ -9,6 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "monaco-editor": "^0.57.0",
     "vue": "^3.3.11"
   },
   "devDependencies": {
@@ -16,5 +17,8 @@
     "typescript": "^6.0.3",
     "vite": "^8.3.3",
     "vue-tsc": "^3.3.12"
+  },
+  "overrides": {
+    "dompurify": "^3.4.17"
   }
 }

@@ -55,6 +55,10 @@ echo "before. Copy that one here and run it with --update to get the current ver
 exit 1
 `
 
+/** the file viewer on the setup host reads folder shares with these, see the user content handler */
+const VIEWER_CORS_EXPOSED = 'Content-Range, ETag'
+const VIEWER_CORS_MAX_AGE = 600
+
 /** headers a file response sets early, which must not stay on an error */
 const FILE_HEADERS = ['Content-Length', 'Content-Range', 'Accept-Ranges', 'ETag', 'Last-Modified']
 
@@ -111,6 +115,8 @@ export async function createHttpServer(config: Config, store: UserStore) {
         // config uses "localhost" for a reverse proxy on the same machine, express calls it "loopback"
         router.set('trust proxy', config.trustedProxy === 'localhost' ? 'loopback' : config.trustedProxy);
     }
+
+    const setupOrigin = formatOrigin(config.setupProtocol, config.setupHost, config.setupPort)
 
     const server = http.createServer(router);
     const wsServer = new WebSocketServer({ noServer: true,  });
@@ -298,6 +304,28 @@ Disallow: /
         .then(function(userData) {
             if (aborted) {
                 throw new Error('aborted')
+            }
+
+            // the file viewer on the setup host may read folder shares, never the apps of forwards.
+            // before the password check, so it can tell a missing password from other failures
+            if (userData.httpPort === 0) {
+                res.vary('Origin')
+                if (req.headers.origin === setupOrigin) {
+                    res.set({
+                        'Access-Control-Allow-Origin': setupOrigin,
+                        'Access-Control-Allow-Credentials': 'true',
+                        'Access-Control-Expose-Headers': VIEWER_CORS_EXPOSED,
+                    })
+                    // browsers send preflights without the password
+                    if (req.method === 'OPTIONS' && req.headers['access-control-request-method']) {
+                        res.set({
+                            'Access-Control-Allow-Methods': 'GET, HEAD',
+                            'Access-Control-Allow-Headers': 'Range',
+                            'Access-Control-Max-Age': String(VIEWER_CORS_MAX_AGE),
+                        })
+                        return res.status(204).end()
+                    }
+                }
             }
 
             // before tracking, scanners guessing passwords should not fill the inspector
@@ -518,6 +546,7 @@ Disallow: /
                                 res.render('folder', folderView(reqPath, files, {
                                     siteName: userData.domainName!,
                                     showHidden: userData.serveDotfiles,
+                                    viewer: `${setupOrigin}/app/view/#${formatOrigin(config.httpProtocol, `${userData.domainName}.${config.httpHost}`, config.httpPort)}`,
                                 }))
                             })
 
@@ -663,7 +692,6 @@ Disallow: /
 
         // browsers get the landing page, curl and other tools keep the plain text instructions
         if (req.accepts(['text/plain', 'text/html']) === 'text/html') {
-            const setupOrigin = formatOrigin(config.setupProtocol, config.setupHost, config.setupPort)
             const exampleHost = `brave-otter-42-k3x9qz.${config.httpHost}`
             return res.render('landing', {
                 setupHost: config.setupHost,

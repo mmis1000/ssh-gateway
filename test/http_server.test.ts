@@ -251,6 +251,12 @@ describe("http server", () => {
             expect(res.body).toContain('<div id="app">');
         });
 
+        it("serves the file viewer", async () => {
+            const res = await request(port, SETUP_HOST, "/app/view/");
+            expect(res.status).toBe(200);
+            expect(res.body).toContain("<title>File viewer</title>");
+        });
+
         it("falls back to index.html for client side routes", async () => {
             const res = await request(port, SETUP_HOST, "/app/some/deep/route");
             expect(res.status).toBe(200);
@@ -261,9 +267,9 @@ describe("http server", () => {
     describe("folder view", () => {
         const entry = (filename: string, mode: number, size = 0) => ({ filename, attrs: { mode, size, mtime: 1760000000 } });
 
-        const renderFolder = (requestPath: string, files: ReturnType<typeof entry>[]) =>
+        const renderFolder = (requestPath: string, files: ReturnType<typeof entry>[], viewer?: string) =>
             new Promise<string>((resolve, reject) => {
-                const view = folderView(requestPath, files, { siteName: "brave-otter-42-k3x9qz", showHidden: false });
+                const view = folderView(requestPath, files, { siteName: "brave-otter-42-k3x9qz", showHidden: false, viewer });
                 router.render("folder", view, (err, html) => (err ? reject(err) : resolve(html!)));
             });
 
@@ -296,6 +302,13 @@ describe("http server", () => {
             expect(html).toMatch(/title="Symbolic link[^"]*">\s*<span class="name">.*<span>latest<\/span><span class="tag">symlink<\/span>/);
             expect(html.match(/class="tag"/g)).toHaveLength(1);
             expect(html).toContain('<time datetime="2025-10-09T08:53:20.000Z">2025-10-09 08:53 UTC</time>');
+        });
+
+        it("puts a view button next to files only", async () => {
+            const viewer = `http://${SETUP_HOST}/app/view/#http://brave-otter-42-k3x9qz.${HTTP_HOST}`;
+            const html = await renderFolder("/", [entry("notes.txt", 0o100644), entry("sub", 0o40755), entry("latest", 0o120777)], viewer);
+            const buttons = [...html.matchAll(/<a class="view" href="([^"]+)"[^>]*aria-label="([^"]+)"/g)].map(([, href, label]) => [href, label]);
+            expect(buttons).toEqual([[`${viewer}/notes.txt`, "View notes.txt as text or hex"]]);
         });
 
         it("has no parent link at the top and says when a folder is empty", async () => {

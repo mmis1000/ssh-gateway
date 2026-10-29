@@ -58,8 +58,18 @@
       padding: 9px 16px; border-top: 1px solid var(--border);
       color: inherit; text-decoration: none;
     }
-    .row:first-child { border-top: none; }
+    .head { border-top: none; }
     a.row:hover, a.row:focus-visible { background: var(--hover); outline: none; }
+    /* the view button sits over the right padding of a file row, links can not be nested */
+    .entry { position: relative; }
+    .entry .row { padding-right: 52px; }
+    .view {
+      position: absolute; top: 4px; right: 8px; bottom: 4px; width: 36px;
+      display: flex; align-items: center; justify-content: center;
+      border-radius: 8px; color: var(--muted);
+    }
+    .view svg { width: 18px; height: 18px; }
+    .view:hover, .view:focus-visible { background: var(--border); color: var(--accent); outline: none; }
     .head { color: var(--muted); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
     .name { display: flex; align-items: center; gap: 10px; min-width: 0; }
     .name span { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -96,6 +106,7 @@
       <symbol id="i-audio" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="16.5" cy="16" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
       <symbol id="i-archive" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 4h16v4H4zM5 8h14v12H5zM10 12h4"/></symbol>
       <symbol id="i-pdf" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M6 3h8l5 5v12a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zM14 3v5h5"/><text x="12" y="17.5" fill="currentColor" font-family="system-ui, sans-serif" font-size="6" font-weight="700" text-anchor="middle">PDF</text></symbol>
+      <symbol id="i-view" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.8"/></symbol>
       <symbol id="i-link" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></symbol>
     </defs>
   </svg>
@@ -116,19 +127,26 @@
     </header>
 
     <main class="listing">
-      <div class="row head" aria-hidden="true"><span>Name</span><span class="size">Size</span><span class="date">Modified</span></div>
+      <div class="entry"><div class="row head" aria-hidden="true"><span>Name</span><span class="size">Size</span><span class="date">Modified</span></div></div>
       <% if (parent) { %>
-        <a class="row folder" href="<%= parent %>">
-          <span class="name"><svg aria-hidden="true"><use href="#i-parent"/></svg><span>Parent folder</span></span>
-          <span class="size"></span><span class="date"></span>
-        </a>
+        <div class="entry">
+          <a class="row folder" href="<%= parent %>">
+            <span class="name"><svg aria-hidden="true"><use href="#i-parent"/></svg><span>Parent folder</span></span>
+            <span class="size"></span><span class="date"></span>
+          </a>
+        </div>
       <% } %>
       <% entries.forEach(function (entry) { %>
-        <a class="row <%= entry.kind %>" href="<%= entry.href %>"<% if (entry.kind === 'link') { %> title="Symbolic link, opens what it points to"<% } %>>
-          <span class="name"><svg aria-hidden="true"><use href="#i-<%= entry.icon %>"/></svg><span><%= entry.name %></span><% if (entry.kind === 'link') { %><span class="tag">symlink</span><% } %></span>
-          <span class="size"><%= entry.sizeText %></span>
-          <span class="date"><% if (entry.modified) { %><time datetime="<%= entry.modified %>"><%= entry.modifiedText %></time><% } %></span>
-        </a>
+        <div class="entry">
+          <a class="row <%= entry.kind %>" href="<%= entry.href %>"<% if (entry.kind === 'link') { %> title="Symbolic link, opens what it points to"<% } %>>
+            <span class="name"><svg aria-hidden="true"><use href="#i-<%= entry.icon %>"/></svg><span><%= entry.name %></span><% if (entry.kind === 'link') { %><span class="tag">symlink</span><% } %></span>
+            <span class="size"><%= entry.sizeText %></span>
+            <span class="date"><% if (entry.modified) { %><time datetime="<%= entry.modified %>"><%= entry.modifiedText %></time><% } %></span>
+          </a>
+          <% if (entry.viewHref) { %>
+            <a class="view" href="<%= entry.viewHref %>" title="View as text or hex" aria-label="View <%= entry.name %> as text or hex"><svg aria-hidden="true"><use href="#i-view"/></svg></a>
+          <% } %>
+        </div>
       <% }) %>
       <% if (entries.length === 0) { %>
         <div class="empty">This folder is empty.</div>

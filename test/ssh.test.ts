@@ -617,6 +617,13 @@ describe("ssh server", () => {
             expect(echoed.body).toBe(body);
         });
 
+        it("does not let the file viewer read the app", async () => {
+            const res = await request(gateway.httpPort, host(), "/cors", { headers: { Origin: `http://${SETUP_HOST}` } });
+            expect(res.status).toBe(200);
+            expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+            expect(res.headers.vary).toBeUndefined();
+        });
+
         it("passes through status codes", async () => {
             const res = await request(gateway.httpPort, host(), "/status/418");
             expect(res.status).toBe(418);
@@ -1189,6 +1196,78 @@ describe("ssh server", () => {
                 expect(res.status).toBe(200);
                 expect(res.headers["content-length"]).toBe("10");
                 expect(res.body).toBe("");
+            });
+        });
+
+        describe("file viewer", () => {
+            const VIEWER = `http://${SETUP_HOST}`;
+
+            it("may read files with ranges from the setup host", async () => {
+                const res = await get("/digits.txt", { Origin: VIEWER, Range: "bytes=2-5" });
+                expect(res.status).toBe(206);
+                expect(res.body).toBe("2345");
+                expect(res.headers["access-control-allow-origin"]).toBe(VIEWER);
+                expect(res.headers["access-control-allow-credentials"]).toBe("true");
+                expect(res.headers["access-control-expose-headers"]).toBe("Content-Range, ETag");
+                expect(res.headers.vary).toBe("Origin");
+            });
+
+            it("is the only other site that may", async () => {
+                for (const origin of ["http://evil.test", `http://${SETUP_HOST}:8080`, `https://${SETUP_HOST}`]) {
+                    const res = await get("/digits.txt", { Origin: origin });
+                    expect(res.status, origin).toBe(200);
+                    expect(res.headers["access-control-allow-origin"], origin).toBeUndefined();
+                    expect(res.headers.vary, origin).toBe("Origin");
+                }
+                const preflight = await request(gateway.httpPort, host(), "/digits.txt", {
+                    method: "OPTIONS",
+                    headers: { Origin: "http://evil.test", "Access-Control-Request-Method": "GET" },
+                });
+                expect(preflight.headers["access-control-allow-origin"]).toBeUndefined();
+            });
+
+            it("answers preflights without the password, and tells it the password is missing", async () => {
+                user.publicAuth = { account: "alice", password: "secret" };
+                try {
+                    const preflight = await request(gateway.httpPort, host(), "/digits.txt", {
+                        method: "OPTIONS",
+                        headers: { Origin: VIEWER, "Access-Control-Request-Method": "GET", "Access-Control-Request-Headers": "range" },
+                    });
+                    expect(preflight.status).toBe(204);
+                    expect(preflight.headers["access-control-allow-origin"]).toBe(VIEWER);
+                    expect(preflight.headers["access-control-allow-methods"]).toBe("GET, HEAD");
+                    expect(preflight.headers["access-control-allow-headers"]).toBe("Range");
+
+                    const denied = await get("/digits.txt", { Origin: VIEWER });
+                    expect(denied.status).toBe(401);
+                    expect(denied.headers["access-control-allow-origin"]).toBe(VIEWER);
+                    expect(denied.body).not.toContain("0123456789");
+
+                    const allowed = await get("/digits.txt", {
+                        Origin: VIEWER,
+                        Authorization: `Basic ${Buffer.from("alice:secret").toString("base64")}`,
+                    });
+                    expect(allowed.status).toBe(200);
+                    expect(allowed.body).toBe("0123456789");
+                } finally {
+                    user.publicAuth = null;
+                }
+            });
+
+            it("still gets 404 for hidden files", async () => {
+                const res = await get("/.env", { Origin: VIEWER });
+                expect(res.status).toBe(404);
+                expect(res.headers["access-control-allow-origin"]).toBe(VIEWER);
+            });
+
+            it("is linked from the listing", async () => {
+                user.serveIndex = false;
+                try {
+                    const res = await get("/");
+                    expect(res.body).toContain(`<a class="view" href="${VIEWER}/app/view/#http://${host()}/digits.txt"`);
+                } finally {
+                    user.serveIndex = true;
+                }
             });
         });
 

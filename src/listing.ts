@@ -12,6 +12,8 @@ export type EntryIcon = 'folder' | 'link' | 'image' | 'video' | 'audio' | 'archi
 export interface ListingEntry {
     name: string
     href: string
+    /** the file in the viewer on the setup host, null for folders and links */
+    viewHref: string | null
     kind: EntryKind
     icon: EntryIcon
     /** bytes, null for folders and links */
@@ -85,8 +87,11 @@ const formatUtc = (date: Date) => `${date.toISOString().slice(0, 16).replace('T'
 /** folders first, then by name the way people count: file2 before file10, case does not matter */
 const collator = new Intl.Collator('en', { numeric: true, sensitivity: 'base' })
 
-/** what the folder page shows for `requestPath`, which ends with a slash */
-export function folderView(requestPath: string, files: DirectoryEntry[], options: { siteName: string, showHidden: boolean }): FolderView {
+/**
+ * what the folder page shows for `requestPath`, which ends with a slash. `viewer` is the viewer url
+ * up to the file path: its page, then the origin of the share in the fragment
+ */
+export function folderView(requestPath: string, files: DirectoryEntry[], options: { siteName: string, showHidden: boolean, viewer?: string }): FolderView {
     const entries = files
         .filter((file) => file.filename !== '.' && file.filename !== '..')
         .filter((file) => options.showHidden || !isHiddenName(file.filename))
@@ -95,10 +100,12 @@ export function folderView(requestPath: string, files: DirectoryEntry[], options
             const kind: EntryKind = type === S_IFDIR ? 'folder' : type === S_IFLNK ? 'link' : 'file'
             const modified = typeof file.attrs.mtime === 'number' ? new Date(file.attrs.mtime * 1000) : null
             const size = kind === 'file' && typeof file.attrs.size === 'number' ? file.attrs.size : null
+            const href = encodePath(requestPath + file.filename) + (kind === 'folder' ? '/' : '')
             return {
                 name: file.filename,
                 // a folder link without the slash costs a redirect, one more round trip through the tunnel
-                href: encodePath(requestPath + file.filename) + (kind === 'folder' ? '/' : ''),
+                href,
+                viewHref: kind === 'file' && options.viewer ? options.viewer + href : null,
                 kind,
                 icon: kind === 'file' ? fileIcon(file.filename) : kind,
                 size,
