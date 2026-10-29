@@ -19,6 +19,8 @@ export interface UserData {
     /** key the gateway logs in to the client side sshd with */
     gatewayKey: string
     gatewayKeyPub: string
+    /** see UserRecord */
+    highestScriptVersion: number
 }
 
 /** what visitors of the public url must sign in with, from run.sh --auth */
@@ -46,6 +48,8 @@ class User {
     domainName: string | null
     password: string | null
     socksPassword: string | null
+    /** see UserRecord, kept up to date by UserStore.noteScriptVersion */
+    highestScriptVersion = 0
     // sshState: number
     remoteUser: string | null
     httpPort: number | null

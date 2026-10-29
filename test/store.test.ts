@@ -117,6 +117,22 @@ describe("UserStore", () => {
         expect((await openTestStore(saveDir)).getById(user.id)!.socksPassword).toBe(added);
     });
 
+    it("keeps the highest script version a user registered with, also after reloading", async () => {
+        const user = await store.create();
+        const file = path.join(saveDir, "users", user.id!, "user.json");
+        // records from before it was kept have none
+        expect(JSON.parse(await readFile(file, "utf8")).highestScriptVersion).toBeUndefined();
+        expect(user.highestScriptVersion).toBe(0);
+
+        await store.noteScriptVersion(user, 9);
+        await store.noteScriptVersion(user, 7);
+        await Promise.all([store.noteScriptVersion(user, 11), store.noteScriptVersion(user, 10)]);
+        expect(user.highestScriptVersion).toBe(11);
+        expect(JSON.parse(await readFile(file, "utf8")).highestScriptVersion).toBe(11);
+        expect(await mode(file)).toBe(0o600);
+        expect((await openTestStore(saveDir)).getById(user.id)!.highestScriptVersion).toBe(11);
+    });
+
     it("skips broken user directories and leftover temporary directories", async () => {
         await mkdir(path.join(saveDir, "users", "brokenuser"));
         await writeFile(path.join(saveDir, "users", "brokenuser", "user.json"), "{ not json");

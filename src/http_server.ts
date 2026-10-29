@@ -6,6 +6,7 @@ const inspect = require('util').inspect;
 import { clientScripts } from "./template";
 import path from "path";
 import { UserStore } from "./store";
+import { updatesOnlyOverSsh } from "./ssh_server";
 import { asSocket, decodePath, formatOrigin, getContentType, parseBasicAuth, parseRawData, secretEquals } from "./utils";
 import getFastReadStream from "./ssh_fast_read_stream";
 import httpProxy from 'http-proxy';
@@ -43,6 +44,16 @@ const VISITOR_ERRORS = {
 } as const satisfies Record<string, readonly [number, string, string]>
 
 export type VisitorError = keyof typeof VISITOR_ERRORS
+
+/**
+ * what /update answers once the user updates over ssh only, see updatesOnlyOverSsh. Older scripts
+ * tell users to run curl ... > run.sh, so this lands in run.sh and says what to do instead
+ */
+const UPDATES_OVER_SSH_SCRIPT = `#! /bin/bash
+echo "The gateway no longer hands out this script for the password, a newer copy of it connected" >&2
+echo "before. Copy that one here and run it with --update to get the current version." >&2
+exit 1
+`
 
 /** headers a file response sets early, which must not stay on an error */
 const FILE_HEADERS = ['Content-Length', 'Content-Range', 'Accept-Ranges', 'ETag', 'Last-Modified']
@@ -623,13 +634,17 @@ Disallow: /
             if (!secretEquals(userData.password, password)) {
                 throw new Error('not authenticated')
             }
-            return userData
-        })
-        .then(clientScriptFor)
-        .then(function(script) {
-            res.set('Content-Type', 'application/x-sh');
+            if (updatesOnlyOverSsh(userData)) {
+                console.log(`${account}: [HTTP] refused update, a script that updates over ssh registered before`);
+                res.status(403).set('Content-Type', 'application/x-sh').set('Cache-Control', 'no-store')
+                res.end(UPDATES_OVER_SSH_SCRIPT)
+                return
+            }
+            return clientScriptFor(userData).then(function(script) {
+                res.set('Content-Type', 'application/x-sh');
 
-            res.end(script)
+                res.end(script)
+            })
         })
         .catch((err) => {
             console.log(`${account}: [HTTP] denied update due to ${err}`);

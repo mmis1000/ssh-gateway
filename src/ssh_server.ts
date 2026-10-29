@@ -57,7 +57,17 @@ function killConnection(client: Connection) {
  */
 export const CLIENT_SCRIPT_VERSION = 9
 /** the first version that knows --update, older ones are told the curl command of /update */
-const UPDATE_OVER_SSH = 9
+export const UPDATE_OVER_SSH = 9
+
+/**
+ * Once a user registered with a script that updates over ssh, /update no longer hands out the
+ * script for the password. The script holds the client key, so a leaked password would otherwise
+ * be enough to take over the tunnel. Users who never ran such a script keep /update, it is the
+ * only way their scripts know.
+ */
+export function updatesOnlyOverSsh(user: User) {
+    return user.highestScriptVersion >= UPDATE_OVER_SSH
+}
 const VERSION_HEADER = /^v(\d+):$/
 /** exit code of a failed check, ssh itself exits with 255 when the connection fails */
 export const CHECK_FAILED = 3
@@ -230,14 +240,23 @@ export function createSshServer(config: Config, store: UserStore, hostKeys: Buff
                         }
 
                         const userData = client.userData!
+                        store.noteScriptVersion(userData, scriptVersion).catch((err) => {
+                            // the version is still kept in memory until the gateway restarts
+                            console.error(`${userData.id}: [SSH] could not save script version ${scriptVersion}: ${inspect(err)}`)
+                        })
                         const updatesOverSsh = scriptVersion >= UPDATE_OVER_SSH
+                        // an older copy of a script that already updated over ssh somewhere else
+                        const copyNewer = !updatesOverSsh && updatesOnlyOverSsh(userData)
                         const updateNotice = scriptVersion < CLIENT_SCRIPT_VERSION
                             ? `Please update this script, a newer version with fixes is available:
-  ${updatesOverSsh ? 'run it with --update' : `curl -u '${userData.id}:${userData.password}' ${formatOrigin(config.setupProtocol, config.setupHost, config.setupPort)}/update > run.sh`}
+  ${updatesOverSsh ? 'run it with --update'
+                                : copyNewer ? 'copy the newer copy of this script that connected before here, and run it with --update'
+                                : `curl -u '${userData.id}:${userData.password}' ${formatOrigin(config.setupProtocol, config.setupHost, config.setupPort)}/update > run.sh`}
 `
                             : ''
                         const updateHint = updatesOverSsh
                             ? 'To get a new version of this script later, run it with --update'
+                            : copyNewer ? 'This script can no longer be fetched with the password, a newer copy of it connected before and gets new versions with --update'
                             : `To get new version of current script, fetch it from ${config.setupProtocol}://${client.userData!.id}:${client.userData!.password}@${config.setupHost}:${config.setupPort}/update`
                         stream.write(`${updateNotice}Client accepted.
 Forward server is opened at ${config.httpProtocol}://${client.userData!.domainName}.${config.httpHost}:${config.httpPort}/

@@ -36,6 +36,12 @@ export interface UserRecord {
     socksPassword: string,
     /** ISO date */
     createdAt: string,
+    /**
+     * the newest run.sh this user registered with, it only goes up. Missing in records from before
+     * it was kept, which counts as 0. From version 9 on, the script updates over ssh and /update no
+     * longer hands it out for the password
+     */
+    highestScriptVersion?: number,
 }
 
 const ALPHANUMERIC = 'abcdefghijklmnopqrstuvwxyz0123456789'
@@ -70,6 +76,8 @@ export async function writeUserRecord(dir: string, record: UserRecord) {
 export class UserStore {
     private byId = new Map<string, User>()
     private byDomain = new Map<string, User>()
+    /** pending writes of user.json per user, so they land in order */
+    private recordWrites = new Map<string, Promise<unknown>>()
 
     constructor (readonly saveDir: string, private log: (msg: string) => void = console.log) {}
 
@@ -113,6 +121,7 @@ export class UserStore {
             password: record.password,
             socksPassword: record.socksPassword,
             domainName: record.domain,
+            highestScriptVersion: Number.isSafeInteger(record.highestScriptVersion) ? record.highestScriptVersion! : 0,
             clientKey: await read(CLIENT_KEY_FILE),
             clientKeyPub: await read(`${CLIENT_KEY_FILE}.pub`),
             gatewayKey: await read(GATEWAY_KEY_FILE),
@@ -143,6 +152,23 @@ export class UserStore {
     findByDomain(domain: unknown) {
         const user = this.getByDomain(domain)
         return user ? Promise.resolve(user) : Promise.reject(new Error(`unknown domain ${String(domain)}`))
+    }
+
+    /** remembers that the user registered with this script version, a lower one changes nothing */
+    async noteScriptVersion(user: User, version: number) {
+        if (version <= user.highestScriptVersion) return
+        user.highestScriptVersion = version
+        const id = user.id!
+        const dir = storePaths(this.saveDir).user(id)
+        const write = (this.recordWrites.get(id) ?? Promise.resolve()).then(async () => {
+            const record: UserRecord = JSON.parse(await readFile(path.join(dir, USER_RECORD_FILE), 'utf8'))
+            if ((record.highestScriptVersion ?? 0) >= version) return
+            record.highestScriptVersion = version
+            await writeUserRecord(dir, record)
+            this.log(`${id}: [Store] registered with script version ${version} for the first time`)
+        })
+        this.recordWrites.set(id, write.catch(() => {}))
+        await write
     }
 
     get size() {

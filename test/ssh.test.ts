@@ -349,6 +349,31 @@ describe("ssh server", () => {
             expect(res.stdout).toContain(`export TARGET_USER="${user.id}"`);
         });
 
+        it("closes /update for the password once a script that updates over ssh registered", async () => {
+            const user = await gateway.store.create();
+            const session = await ClientSession.create(gateway, user);
+            const page = (password = user.password!) => request(gateway.httpPort, SETUP_HOST, "/update", {
+                headers: { Authorization: `Basic ${Buffer.from(`${user.id}:${password}`).toString("base64")}` },
+            });
+            expect((await page()).status).toBe(200);
+            await session.exec(`'v8:' register ${LOCAL_USER} 8080 null`);
+            expect((await page()).status).toBe(200);
+
+            await session.register(8080);
+            const refused = await page();
+            expect(refused.status).toBe(403);
+            expect(refused.body).toContain("Copy that one here and run it with --update");
+            expect(refused.body).not.toContain(user.clientKey!.trim().split("\n")[1]);
+            // the old scripts save the answer as run.sh, it says what happened when run
+            const saved = await run("bash", ["-s"], refused.body);
+            expect(saved.code).toBe(1);
+            expect(saved.stderr).toContain("no longer hands out this script for the password");
+            // a wrong password looks as before
+            expect((await page("wrong")).status).toBe(401);
+            // over ssh it still works
+            expect((await session.exec(`'v${CLIENT_SCRIPT_VERSION}:' update`)).stdout).toContain(`export TARGET_USER="${user.id}"`);
+        });
+
         it("leaves the protocol of a registered tunnel alone", async () => {
             await session.exec(`register ${LOCAL_USER} 8080`);
             expect(user.protocolVersion).toBe(Protocol.V0);
@@ -391,10 +416,43 @@ describe("ssh server", () => {
             ["v7", `v7: register ${LOCAL_USER} 8080 null`],
             ["v8", `v8: register ${LOCAL_USER} 8080 null`],
         ])("asks %s scripts to update and still accepts them", async (_, command) => {
+            // a user that never ran a script that updates over ssh
+            const user = await gateway.store.create();
+            const session = await ClientSession.create(gateway, user);
             const res = await session.exec(command);
             expect(res.stdout).toMatch(/^Please update this script, a newer version with fixes is available:\n/);
             expect(res.stdout).toContain(`curl -u '${user.id}:${user.password}' http://gateway.test/update > run.sh`);
             expect(res.stdout).toContain("Client accepted.");
+        });
+
+        it("tells an older copy to copy the newer one once that registered, not to use the password", async () => {
+            const user = await gateway.store.create();
+            const session = await ClientSession.create(gateway, user);
+            const old = `'v8:' register ${LOCAL_USER} 8080 null`;
+            expect((await session.exec(old)).stdout).toContain("/update > run.sh");
+            expect(user.highestScriptVersion).toBe(8);
+
+            expect((await session.register(8080)).stdout).toContain("Client accepted.");
+            expect(user.highestScriptVersion).toBe(CLIENT_SCRIPT_VERSION);
+
+            const res = await session.exec(old);
+            expect(res.stdout).toContain("Client accepted.");
+            expect(res.stdout).toContain("copy the newer copy of this script that connected before here, and run it with --update\n");
+            expect(res.stdout).toContain("This script can no longer be fetched with the password");
+            expect(res.stdout).not.toContain("/update");
+            expect(res.stdout).not.toContain("curl");
+            // an older copy never lowers it
+            expect(user.highestScriptVersion).toBe(CLIENT_SCRIPT_VERSION);
+        });
+
+        it("counts only registers, not check, update or a refused register", async () => {
+            const user = await gateway.store.create();
+            const session = await ClientSession.create(gateway, user);
+            await session.exec(`'v${CLIENT_SCRIPT_VERSION}:' check`);
+            await session.exec(`'v${CLIENT_SCRIPT_VERSION}:' update`);
+            await session.exec(`'v${CLIENT_SCRIPT_VERSION}:' register ${LOCAL_USER} not-a-port null`);
+            await session.exec(`'v${CLIENT_SCRIPT_VERSION}:' register ${LOCAL_USER} 8080 null --auth`, "no colon\n");
+            expect(user.highestScriptVersion).toBe(0);
         });
 
         it("tells current scripts to update with --update, not with the password", async () => {
