@@ -341,7 +341,8 @@ Disallow: /
                     // the app may keep the connection alive and node does not end a socket it got
                     // from createConnection, so close the channel once the visitor got the response
                     let channel: Duplex | null = null
-                    let finished = false
+                    // the visitor may have left while waiting for the tunnel, 'close' is already over then
+                    let finished = res.destroyed
                     res.once('close', function() {
                         finished = true
                         channel?.destroy()
@@ -394,6 +395,14 @@ Disallow: /
                     )
 
                     client.on('response', function(msg) {
+                        // destroy() of an ssh2 channel only asks the client to close it, an answer already on
+                        // its way still arrives after the visitor left. pipeline() throws for a closed res
+                        // since node 24, inside the ssh2 parser that is an error of the whole connection
+                        // and the tunnel went down with it
+                        if (res.destroyed) {
+                            client.destroy()
+                            return
+                        }
                         res.writeHead(msg.statusCode!, msg.headers)
 
 

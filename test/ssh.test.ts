@@ -534,6 +534,8 @@ describe("ssh server", () => {
         let target: http.Server;
         const targetHits: string[] = [];
         const host = () => `${user.domainName}.${HTTP_HOST}`;
+        // requests to /late wait until the test answers them
+        let onLate: ((res: http.ServerResponse) => void) | null = null;
         let targetPortNumber: number;
         const targetPort = () => targetPortNumber;
 
@@ -546,6 +548,10 @@ describe("ssh server", () => {
                     res.write("first chunk");
                     const timer = setInterval(() => res.write("."), 50);
                     res.on("close", () => clearInterval(timer));
+                    return;
+                }
+                if (req.url === "/late") {
+                    onLate?.(res);
                     return;
                 }
                 req.on("end", () => {
@@ -779,6 +785,32 @@ describe("ssh server", () => {
                     echo.close();
                 }
             });
+        });
+
+        it("keeps the tunnel when the app answers after the visitor left", async () => {
+            // a browser that cancels an image load: the answer is already on its way through the
+            // tunnel when the visitor's connection closes, and it must not take the tunnel down
+            for (let i = 0; i < 40; i++) {
+                const arrived = new Promise<http.ServerResponse>((resolve) => onLate = resolve);
+                const req = http.request({ host: "127.0.0.1", port: gateway.httpPort, path: "/late", headers: { Host: host() } });
+                req.on("error", () => {});
+                req.end();
+                const res = await arrived;
+                const answer = () => {
+                    res.writeHead(200, { "Content-Type": "image/png" });
+                    res.end(Buffer.alloc(20 * 1024, "x"));
+                };
+                // the visitor is closer to the gateway than the answer, which still has to go through
+                // ssh. Answer a little before or after it leaves, the close must catch it on the way
+                if (i % 2) answer();
+                req.destroy();
+                if (!(i % 2)) setTimeout(answer, i % 4);
+                await new Promise((resolve) => setTimeout(resolve, 50));
+            }
+
+            const res = await request(gateway.httpPort, host(), "/after-late");
+            expect(res.status).toBe(200);
+            expect(JSON.parse(res.body).url).toBe("/after-late");
         });
 
         it("closes forwarded channels after each request", async () => {
