@@ -95,3 +95,8 @@ SSH_OPTS=(
     -o "UserKnownHostsFile \"$WORKDIR/known_hosts\"" -o "StrictHostKeyChecking yes"
     -o "ServerAliveInterval 15"
 )
+# for the commands that only talk to the master. When the master hangs up while one of them waits
+# for it, ssh logs in by itself instead. That login becomes a second master without the forward,
+# visitors get "offline" for a minute and tunnel_alive keeps passing. ProxyCommand false makes the
+# login fail at once, so the command fails like it should
+MUX_OPTS=(-o "ControlMaster no" -o "ProxyCommand false")

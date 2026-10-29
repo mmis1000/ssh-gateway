@@ -1,5 +1,5 @@
 # sent before every command, CLIENT_SCRIPT_VERSION of the gateway is the version it hands out
-SCRIPT_VERSION=9
+SCRIPT_VERSION=10
 
 function register {
     local command="v$SCRIPT_VERSION: register $CURRENT_USER $FORWARD_PORT $(printf '%q' "$STATIC_DIRECTORY")"
@@ -8,10 +8,10 @@ function register {
     if [ -n "$PUBLIC_AUTH" ]
     then
         # on stdin, a command line would show the password in ps and in the gateway log
-        printf '%s\n' "$PUBLIC_AUTH" | ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "$command --auth"
+        printf '%s\n' "$PUBLIC_AUTH" | ssh "${SSH_OPTS[@]}" "${MUX_OPTS[@]}" $TARGET_USER@$TARGET_HOST "$command --auth"
     else
         # the gateway never reads it, do not let ssh take what is typed in the terminal
-        ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "$command" < /dev/null
+        ssh "${SSH_OPTS[@]}" "${MUX_OPTS[@]}" $TARGET_USER@$TARGET_HOST "$command" < /dev/null
     fi
 }
 
@@ -23,7 +23,7 @@ function check_folder {
     CHECK_FAILURE=""
     [ "$FORWARD_PORT" != 0 ] && return 0
     local output status
-    output="$(ssh "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v$SCRIPT_VERSION: check" < /dev/null 2>&1)"
+    output="$(ssh "${SSH_OPTS[@]}" "${MUX_OPTS[@]}" $TARGET_USER@$TARGET_HOST "v$SCRIPT_VERSION: check" < /dev/null 2>&1)"
     status=$?
     # 3 is the gateway's answer, anything else is ssh failing to ask
     [ $status == 3 ] && CHECK_FAILURE="$output"
@@ -50,7 +50,7 @@ function connect {
     sleep 5
     register || return 1
     sleep 1
-    ssh -N -O forward "${SSH_OPTS[@]}" -R 22:localhost:$TUNNEL_PORT $TARGET_USER@$TARGET_HOST || return 1
+    ssh -N -O forward "${SSH_OPTS[@]}" "${MUX_OPTS[@]}" -R 22:localhost:$TUNNEL_PORT $TARGET_USER@$TARGET_HOST || return 1
     if ! check_folder
     then
         # a connection the gateway can not use is not up, the reconnect loop tries again
@@ -60,7 +60,7 @@ function connect {
 }
 
 function tunnel_alive {
-    ssh -O check -N "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST >/dev/null 2>&1
+    ssh -O check -N "${SSH_OPTS[@]}" "${MUX_OPTS[@]}" $TARGET_USER@$TARGET_HOST >/dev/null 2>&1
 }
 
 RECONNECT_LOG="$WORKDIR/reconnect.log"

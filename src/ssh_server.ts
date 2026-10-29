@@ -54,8 +54,9 @@ function killConnection(client: Connection) {
  * 7: in folder mode, says the tunnel is up only after "check" found the folder readable
  * 8: --dotfiles shares names starting with a dot, which are hidden and refused otherwise
  * 9: --update gets the new version with the "update" command and saves it next to the script
+ * 10: commands that only talk to the running connection never log in by themselves when it goes away
  */
-export const CLIENT_SCRIPT_VERSION = 9
+export const CLIENT_SCRIPT_VERSION = 10
 /** the first version that knows --update, older ones are told the curl command of /update */
 export const UPDATE_OVER_SSH = 9
 

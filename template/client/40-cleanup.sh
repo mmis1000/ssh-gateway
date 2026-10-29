@@ -1,5 +1,5 @@
 function close_master {
-  ssh -N -O exit "${SSH_OPTS[@]}" $TARGET_USER@$TARGET_HOST >/dev/null 2>&1
+  ssh -N -O exit "${SSH_OPTS[@]}" "${MUX_OPTS[@]}" $TARGET_USER@$TARGET_HOST >/dev/null 2>&1
   rm -f "$CONTROL_SOCK" >/dev/null 2>&1
 }
 
